@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "node agent1-query-builder.js Denmark"
+startCommand = "node index.js Denmark"
 restartPolicyType = "always"
