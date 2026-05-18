@@ -22,6 +22,8 @@ async function runPipeline() {
 
     console.log('\n▶ Agent 2: Discovering companies...');
     await run(`node agent2-discovery.js`);
+    // Add this line before agent2
+await run(`node import-denmark-contacts.js`);
 
     console.log('\n✅ Pipeline complete!');
   } catch (err) {
