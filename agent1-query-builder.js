@@ -1,218 +1,133 @@
-const Anthropic = require("@anthropic-ai/sdk");
+const https = require("https");
 const fs = require("fs");
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const PRODUCT_GROUPS = [
+  { id:1, category:"Babywear", group:"Baby Rompers & Onesies", products:["baby rompers","bubble rompers","muslin rompers","printed onesies","bodysuits","ribbed bodysuits"], buyers:["baby romper brand","babywear brand","organic baby clothing brand","baby fashion retailer"] },
+  { id:2, category:"Babywear", group:"Baby Dresses & Sets", products:["baby dresses","tiered baby dresses","smocked dresses","embroidered dresses","floral dresses","pinafore dresses","muslin dresses","baby co-ord sets"], buyers:["baby dress brand","children boutique","kidswear retailer","baby fashion brand"] },
+  { id:3, category:"Babywear", group:"Baby Sleepwear & Essentials", products:["footed sleepsuits","baby pajama sets","seasonal sleepwear","muslin swaddles","baby blankets","bib sets","newborn gift sets","terry bathrobes"], buyers:["baby essentials brand","newborn clothing brand","organic baby brand","baby gift retailer"] },
+  { id:4, category:"Kidswear", group:"Kids Tops & Shirts", products:["girls tops","peplum tops","frill tops","graphic tees","boys shirts","cuban collar shirts","flannel shirts","denim shirts"], buyers:["kidswear brand","children fashion brand","kids clothing retailer","school casualwear brand"] },
+  { id:5, category:"Kidswear", group:"Kids Bottoms & Outerwear", products:["kids sweatpants","relaxed joggers","terry towelling sets","waffle knit sets","hooded baby jackets","quilted baby jackets","puffer vests","beanies","scarves","mittens"], buyers:["children outerwear brand","kids activewear brand","kidswear retailer"] },
+  { id:6, category:"Womenswear", group:"Womenswear Dresses", products:["maxi dresses","midi dresses","smocked dresses","kaftan dresses","wrap dresses","boho dresses","resort dresses","tiered dresses","slip dresses"], buyers:["womenswear brand","women fashion retailer","resort wear brand","boho fashion brand"] },
+  { id:7, category:"Womenswear", group:"Womenswear Tops & Blouses", products:["boho tops","embroidered tops","smocked tops","wrap tops","crop tops","blouses","satin blouses","puff sleeve blouses","linen shirts","camisoles"], buyers:["women clothing brand","blouse brand","womenswear retailer","women boutique brand"] },
+  { id:8, category:"Womenswear", group:"Womenswear Bottoms & Skirts", products:["wide leg pants","linen pants","cargo pants","denim jeans","barrel leg pants","tiered skirts","wrap skirts","pleated skirts","satin skirts","denim skirts"], buyers:["womenswear brand","denim brand","women bottoms brand","sustainable fashion brand"] },
+  { id:9, category:"Womenswear", group:"Womenswear Knitwear & Sets", products:["sweatshirts","oversized hoodies","knit pullovers","cardigans","crochet styles","quilted jackets","beach cover ups","co-ord sets","lounge sets"], buyers:["knitwear brand","women outerwear brand","loungewear brand","sustainable knitwear buyer"] },
+  { id:10, category:"Menswear", group:"Menswear Shirts & Tops", products:["linen shirts","oxford shirts","resort shirts","flannel shirts","overshirts","graphic t-shirts","garment dyed tees","vintage wash tees","polo t-shirts","knit polos"], buyers:["menswear brand","men clothing retailer","resort wear brand","casual menswear brand"] },
+  { id:11, category:"Menswear", group:"Menswear Bottoms", products:["relaxed fit jeans","carpenter jeans","cargo pants","utility pants","linen pants","chinos","chino shorts","cargo shorts","denim shorts"], buyers:["menswear brand","denim brand","men bottoms retailer","workwear brand"] },
+  { id:12, category:"Menswear", group:"Menswear Knitwear & Outerwear", products:["sweatshirts","hoodies","zip hoodies","knitted sweaters","cardigans","harrington jackets","bomber jackets","lightweight puffers","denim jackets"], buyers:["menswear knitwear brand","men outerwear brand","casual menswear retailer","streetwear brand"] },
+  { id:13, category:"Menswear", group:"Menswear Sets & Collections", products:["lounge sets","tracksuits","co-ord sets","washed cotton programs","garment dyed collections","yarn dyed checks","organic cotton styles","resortwear","chinos"], buyers:["menswear brand","resort fashion brand","sustainable menswear brand","Scandinavian basics brand"] },
+  { id:14, category:"Home Textiles", group:"Bedding & Quilts", products:["bed linen sets","duvet covers","pillow covers","fitted sheets","organic cotton bedding","linen bedding","washed cotton bedding","muslin quilts","cotton quilts","waffle blankets"], buyers:["home textile brand","bedding brand","organic home brand","linen bedding buyer","sustainable home brand"] },
+  { id:15, category:"Home Textiles", group:"Kitchen & Table Textiles", products:["napkins","kitchen textiles","tea towels","aprons"], buyers:["kitchen textile brand","table linen brand","home lifestyle brand","sustainable kitchen brand"] },
+  { id:16, category:"Home Textiles", group:"Bath & Scandinavian Home", products:["bathrobes","waffle bathrobes","scandinavian home collections","sustainable home textiles"], buyers:["home textile brand","bathrobe brand","Scandinavian home brand","sustainable lifestyle brand"] },
+];
 
-// ============================================================
-// CAG — CACHED COMPANY INTELLIGENCE (preloaded once, reused)
-// This is the full brain of the system. Claude reads this
-// context every time to generate smart, targeted queries.
-// ============================================================
-const KISHOR_CAG = `
-You are an AI sourcing intelligence agent for KISHOR EXPORTS, India.
-Your job is to find European fashion brands that are ideal buyers for Kishor Exports.
-
-================================================================
-KISHOR EXPORTS — COMPLETE COMPANY PROFILE
-================================================================
-
-FACTORY DETAILS:
-- Name: Kishor Exports
-- Location: Agra, India (also has SEZ unit)
-- Type: Woven + Knits manufacturer
-- Capacity: 600,000+ garments/month
-- Workers: 3,200+ (85% women)
-- Factory size: Large scale, suitable for mid to large brands
-
-CERTIFICATIONS (All active):
-- GOTS (Global Organic Textile Standard)
-- FAIR TRADE certified
-- OEKO-TEX STANDARD 100
-- OCS (Organic Content Standard)
-- SEDEX SMETA 4 PILLAR audit
-
-CSR / SUSTAINABILITY:
-- Solar energy powered factory
-- Rainwater harvesting
-- Women empowerment programs
-- Living wages
-- Recycled packaging
-- Organic cotton sourcing
-- Carbon footprint reduction initiatives
-
-EXISTING BRAND EXPERIENCE:
-- NEXT (UK) — major high street brand
-- OVS (Italy) — large European fashion retailer
-- Carol (France) — women's fashion brand
-- Debenhams/Magasin — department store
-
-================================================================
-COMPLETE PRODUCT CATALOGUE
-================================================================
-
-BABYWEAR & KIDSWEAR:
-Baby Rompers, Bubble Rompers, Muslin Rompers, Sleeveless Rompers,
-Printed Onesies, Baby Onepieces, Bodysuits, Ribbed Bodysuits,
-Footed Sleepsuits, Baby Pajama Sets, Baby Leggings, Bloomers,
-Baby Shorts, Baby Joggers, Baby Sweatshirts, Hooded Baby Jackets,
-Quilted Baby Jackets, Knitted Baby Cardigans, Baby Co-Ord Sets,
-Baby Dresses, Tiered Baby Dresses, Smocked Dresses, Embroidered Dresses,
-Floral Dresses, Pinafore Dresses, Muslin Dresses, Cotton Voile Dresses,
-Girls Tops, Peplum Tops, Frill Tops, Puff Sleeve Tops, Graphic Tees,
-Boys Shirts, Cuban Collar Shirts, Flannel Shirts, Denim Shirts,
-Kids Sweatpants, Relaxed Joggers, Terry Towelling Sets, Waffle Knit Sets,
-Rib Knit Programs, Organic Cotton Essentials, Neutral Essentials,
-Seasonal Sleepwear, Muslin Swaddles, Baby Blankets, Bib Sets,
-Newborn Gift Sets, Terry Bathrobes, Puffer Vests, Beanies, Scarves,
-Mittens, School Casualwear, Holiday Capsules, Beachwear Programs,
-Resort Kidswear, Scandinavian Minimal Styles, Earth Tone Collections
-
-WOMENSWEAR:
-Boho Tops, Embroidered Tops, Lace Tops, Smocked Tops, Peasant Tops,
-Wrap Tops, Crop Tops, Tank Tops, Camisoles, Tunics, Blouses,
-Satin Blouses, Puff Sleeve Blouses, Oversized Shirts, Linen Shirts,
-Shirt Dresses, Maxi Dresses, Midi Dresses, Mini Dresses, Tiered Dresses,
-Smocked Dresses, Slip Dresses, Kaftan Dresses, Wrap Dresses, Boho Dresses,
-Floral Dresses, Embroidered Dresses, Resort Dresses, Vacation Dresses,
-Occasion Dresses, Lounge Dresses, Knit Dresses, Sweat Dresses,
-Beach Cover Ups, Co-Ord Sets, Lounge Sets, Relaxed Tailoring,
-Wide Leg Pants, Linen Pants, Cargo Pants, Drawstring Pants, Denim Jeans,
-Barrel Leg Pants, Shorts, Mini Skirts, Midi Skirts, Maxi Skirts,
-Tiered Skirts, Wrap Skirts, Pleated Skirts, Satin Skirts, Denim Skirts,
-Sweatshirts, Cropped Sweatshirts, Oversized Hoodies, Knit Pullovers,
-Cardigans, Crochet Styles, Open Knit Styles, Quilted Jackets
-
-MENSWEAR:
-Linen Shirts, Oxford Shirts, Resort Shirts, Denim Shirts, Flannel Shirts,
-Overshirts, Twill Shackets, Harrington Jackets, Bomber Jackets,
-Lightweight Puffers, Denim Jackets, Graphic T-Shirts, Heavyweight T-Shirts,
-Garment Dyed Tees, Relaxed Fit Tees, Vintage Wash Tees, Henley T-Shirts,
-Polo T-Shirts, Knit Polos, Sweatshirts, Oversized Sweatshirts, Hoodies,
-Zip Hoodies, Waffle Pullovers, Knitted Sweaters, Cardigans, Crewneck Knits,
-Relaxed Fit Jeans, Straight Fit Jeans, Carpenter Jeans, Cargo Pants,
-Utility Pants, Pleated Trousers, Linen Pants, Drawstring Pants, Chinos,
-Chino Shorts, Cargo Shorts, Denim Shorts, Lounge Sets, Tracksuits,
-Co-Ord Sets, Washed Cotton Programs, Garment Dyed Collections,
-Yarn Dyed Checks, Stripe Programs, Textured Knitwear, Winter Fleece,
-Resortwear, Organic Cotton Styles, Layering Essentials
-
-HOME TEXTILES:
-Bed Linen Sets, Duvet Covers, Pillow Covers, Fitted Sheets, Flat Sheets,
-Organic Cotton Bedding, Linen Bedding, Washed Cotton Bedding,
-Yarn Dyed Stripe Bedding, Textured Bedding, Muslin Quilts, Cotton Quilts,
-Waffle Blankets, Napkins, Kitchen Textiles, Tea Towels, Aprons,
-Bathrobes, Waffle Bathrobes, Scandinavian Home Collections,
-Sustainable Home Textiles
-
-KEY FABRICS:
-Organic Cotton, GOTS Cotton, Muslin, Linen, Chambray, Denim,
-Viscose, Recycled Polyester, Waffle Knit, Rib Knit, Jersey,
-Flannel, Terry, Voile, Satin, Fleece
-
-================================================================
-IDEAL BUYER PROFILE — WHO WE WANT TO FIND
-================================================================
-
-PERFECT FIT:
-- European fashion brands (Scandinavian, UK, German, French, Dutch, Belgian)
-- Mid-market to affordable premium price positioning
-- Sustainable / ethical / organic positioning
-- Sourcing from India or Asia already (or open to it)
-- Annual turnover: €5M to €500M (not too small, not luxury)
-- Categories: womenswear, kidswear, babywear, menswear, home textiles
-- Certifications required: GOTS, OEKO-TEX, FAIR TRADE (we have all)
-
-KNOWN DANISH BRANDS ALREADY RESEARCHED (DO NOT search for these again):
-DK Company, Kompagniet af 1991, ZIZZI, GANNI, INDICODE, Konges Sløjd,
-UBANG, MOS MOSH, Fransa, Part Two, Samsøe Samsøe, b.young, Gestuz,
-Second Female, Soft Rebels, Soaked in Luxury, KnowledgeCotton Apparel,
-Saga Copenhagen, Done by Deer, BESTSELLER, Brands4kids, MSCH Copenhagen,
-Rosemunde, Skall Studio, SAND Copenhagen
-
-AVOID THESE TYPES:
-- Ultra luxury brands (Gucci, Louis Vuitton level)
-- Fast fashion with impossible compliance (Shein, Primark level)
-- Micro brands (less than €2M turnover)
-- Brands manufacturing only in Europe (Italy, Portugal focus)
-- Accessories-only brands (shoes, bags only)
-- Pure sportswear brands (Nike, Adidas level)
-
-================================================================
-SEARCH INTELLIGENCE RULES
-================================================================
-
-For each country, find:
-1. Brands NOT yet in our database (avoid the Known Danish Brands list above)
-2. Brands that source from India/Bangladesh/Asia
-3. Brands with sustainability/organic focus
-4. Department stores and multi-brand retailers
-5. Buying houses and sourcing agents
-6. Trade fair participants (CIFF Copenhagen, Premiere Vision, Pure London)
-7. B2B wholesale platforms active in that country
-8. Private label manufacturers looking for suppliers
-9. Baby/kids specialist brands
-10. Home textile brands (separate search)
+const KISHOR_CONTEXT = `
+You are a B2B sourcing agent for KISHOR EXPORTS, Agra India.
+Factory: 600,000+ garments/month | 3,200+ workers
+Certifications: GOTS, FAIR TRADE, OEKO-TEX, OCS, SEDEX SMETA
+Clients: NEXT UK, OVS Italy, Carol France, Debenhams
+Target: Mid-market to affordable premium fashion brands globally
+Avoid: Luxury brands, ultra-fast-fashion, micro brands under 2M EUR
 `;
 
-// ============================================================
-// AGENT 1 — QUERY BUILDER (with CAG)
-// ============================================================
-async function buildSearchQueries(country) {
-  console.log(`\n🔍 Agent 1 — Building targeted queries for: ${country}`);
+function callGemini(prompt) {
+  return new Promise((resolve, reject) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2000 }
+    });
+    const options = {
+      hostname: "generativelanguage.googleapis.com",
+      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => data += chunk);
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          resolve(text);
+        } catch(e) { reject(new Error("Parse error: " + data.substring(0,200))); }
+      });
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
 
-  const prompt = `
-${KISHOR_CAG}
+async function buildQueriesForGroup(country, group) {
+  const prompt = `${KISHOR_CONTEXT}
 
 TARGET COUNTRY: ${country}
+PRODUCT GROUP: ${group.group}
+CATEGORY: ${group.category}
+PRODUCTS: ${group.products.join(", ")}
+BUYER TYPES: ${group.buyers.join(", ")}
 
-Generate 20 highly specific Google search queries to find NEW fashion brands and buyers in ${country} for Kishor Exports.
-
-IMPORTANT: Generate queries that will find companies we have NOT researched yet.
-Focus on:
-- Brands we don't know about yet
-- Home textile buyers (separate category)
-- Menswear buyers
-- Baby/kids specialist brands
-- Department stores and multi-brand retailers
-- Buying agents and sourcing houses
+Generate 10 specific Google search queries to find ${group.category} brands in ${country} who buy ${group.group}.
+- Find ACTUAL BRAND WEBSITES not directories or news
+- Include local language if helpful
+- Focus on brands sourcing from India/Asia
 
 Return ONLY valid JSON:
 {
   "country": "${country}",
-  "total_queries": 20,
-  "queries": [
-    {
-      "id": 1,
-      "category": "Sustainable Womenswear",
-      "query": "sustainable womenswear brands ${country} organic cotton ethical sourcing",
-      "intent": "Find eco-conscious womenswear brands that need ethical manufacturers"
-    }
-  ]
+  "category": "${group.category}",
+  "group": "${group.group}",
+  "queries": [{"id":1,"query":"example query here","intent":"why this query"}]
+}`;
+
+  const raw = await callGemini(prompt);
+  const clean = raw.replace(/\`\`\`json|\`\`\`/g, "").trim();
+  try { return JSON.parse(clean); }
+  catch(e) { return { country, category: group.category, group: group.group, queries: [] }; }
 }
-`;
 
-  const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 3000,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const raw = response.content[0].text;
-  const clean = raw.replace(/```json|```/g, "").trim();
-  const result = JSON.parse(clean);
-
-  console.log(`✅ Generated ${result.total_queries} queries for ${country}\n`);
-  result.queries.forEach((q) => {
-    console.log(`  [${q.id}] ${q.category}: ${q.query}`);
-  });
+async function runAgent1(country) {
+  console.log("\n============================================");
+  console.log(`  AGENT 1 — Query Builder (Gemini FREE)`);
+  console.log(`  Country: ${country} | Groups: ${PRODUCT_GROUPS.length}`);
+  console.log("============================================\n");
 
   if (!fs.existsSync("./output")) fs.mkdirSync("./output");
-  const outputPath = `./output/queries_${country.toLowerCase().replace(/\s/g, "_")}_${Date.now()}.json`;
-  fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
-  console.log(`\n💾 Saved to: ${outputPath}`);
 
-  return result;
+  const allQueries = [];
+  let totalQueries = 0;
+
+  for (const group of PRODUCT_GROUPS) {
+    console.log(`[${group.id}/16] ${group.category} — ${group.group}`);
+    try {
+      const result = await buildQueriesForGroup(country, group);
+      allQueries.push(result);
+      totalQueries += result.queries.length;
+      console.log(`  Generated ${result.queries.length} queries`);
+      result.queries.forEach(q => console.log(`  → ${q.query}`));
+      await new Promise(r => setTimeout(r, 4000)); // 15 RPM limit
+    } catch(err) {
+      console.error(`  Error: ${err.message}`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+
+  const output = {
+    country, total_groups: PRODUCT_GROUPS.length,
+    total_queries: totalQueries,
+    generated_at: new Date().toISOString(),
+    groups: allQueries
+  };
+
+  const outputPath = `./output/queries_${country.toLowerCase().replace(/\s/g,"_")}_${Date.now()}.json`;
+  fs.writeFileSync(outputPath, JSON.stringify(output, null, 2));
+
+  console.log(`\n✅ Agent 1 Complete!`);
+  console.log(`📊 Total queries: ${totalQueries} across ${PRODUCT_GROUPS.length} product groups`);
+  console.log(`💾 Saved: ${outputPath}\n`);
+  return output;
 }
 
 const country = process.argv[2] || "Denmark";
-buildSearchQueries(country).catch(console.error);
+runAgent1(country).catch(console.error);
