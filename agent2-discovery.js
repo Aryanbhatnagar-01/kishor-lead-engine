@@ -9,25 +9,31 @@ const supabase = createClient(
 
 function searchGoogle(query) {
   return new Promise((resolve, reject) => {
+    const params = new URLSearchParams({
+      engine: "google",
+      q: query,
+      gl: "dk",
+      hl: "en",
+      num: "10",
+      api_key: process.env.SERP_API_KEY
+    });
+
     const options = {
-      hostname: "api.brightdata.com",
-      path: `/serp?engine=google&q=${encodeURIComponent(query)}&gl=dk&hl=en`,
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${process.env.BRIGHT_DATA_API_KEY}`
-      }
+      hostname: "serpapi.com",
+      path: `/search?${params.toString()}`,
+      method: "GET"
     };
 
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
-        console.log(`Status: ${res.statusCode}`);
-        console.log(`Raw (500 chars): ${data.substring(0, 500)}`);
         try {
-          resolve(JSON.parse(data));
+          const parsed = JSON.parse(data);
+          resolve(parsed);
         } catch(e) {
-          resolve({ error: "parse error", raw: data.substring(0, 200) });
+          console.log("Parse error, raw:", data.substring(0, 300));
+          resolve({ error: "parse error" });
         }
       });
     });
@@ -43,12 +49,12 @@ async function runAgent2() {
   console.log("============================================\n");
 
   const outputDir = "./output";
-  const files = fs.existsSync(outputDir) 
+  const files = fs.existsSync(outputDir)
     ? fs.readdirSync(outputDir).filter(f => f.startsWith("queries_")).sort().reverse()
     : [];
 
   if (files.length === 0) {
-    console.error("❌ No query files found. Run Agent 1 first!");
+    console.error("❌ No query files found!");
     return;
   }
 
@@ -60,65 +66,67 @@ async function runAgent2() {
 
   let allCompanies = [];
 
-  // Only test first 3 queries to debug
-  const testQueries = queries.slice(0, 3);
-
-  for (const q of testQueries) {
-    console.log(`\n[${q.id}] ${q.category}: ${q.query}`);
+  for (const q of queries) {
+    console.log(`\n[${q.id}/15] ${q.category}`);
+    console.log(`  Query: ${q.query}`);
 
     try {
       const result = await searchGoogle(q.query);
 
       if (result.error) {
-        console.log(`⚠️ Error: ${result.error}`);
-        console.log(`Raw: ${result.raw}`);
+        console.log(`  ⚠️ Error: ${result.error}`);
         continue;
       }
 
-      console.log(`Response keys: ${Object.keys(result).join(", ")}`);
-
-      // Handle different response formats
-      const organic = result.organic || result.results || result.organic_results || [];
-      console.log(`Found ${organic.length} results`);
+      const organic = result.organic_results || [];
+      console.log(`  ✅ Found ${organic.length} results`);
 
       for (const item of organic) {
-        if (item.link || item.url) {
-          const url = item.link || item.url;
-          try {
-            const domain = new URL(url).hostname.replace("www.", "");
-            const skipDomains = ["linkedin.com", "facebook.com", "instagram.com", "wikipedia.org"];
-            if (!skipDomains.some(s => domain.includes(s))) {
-              allCompanies.push({
-                company_name: (item.title || domain).split(" - ")[0].trim(),
-                website: domain,
-                full_url: url,
-                description: item.snippet || item.description || "",
-                source_query: q.query,
-                category: q.category,
-                country: country,
-                status: "discovered",
-                created_at: new Date().toISOString()
-              });
-            }
-          } catch(e) {}
-        }
+        if (!item.link) continue;
+        try {
+          const domain = new URL(item.link).hostname.replace("www.", "");
+          const skipDomains = ["linkedin.com", "facebook.com", "instagram.com", "wikipedia.org", "youtube.com"];
+          if (skipDomains.some(s => domain.includes(s))) continue;
+
+          console.log(`     → ${item.title} (${domain})`);
+
+          allCompanies.push({
+            company_name: (item.title || domain).split(" - ")[0].split(" | ")[0].trim(),
+            website: domain,
+            full_url: item.link,
+            description: item.snippet || "",
+            source_query: q.query,
+            category: q.category,
+            country: country,
+            status: "discovered",
+            created_at: new Date().toISOString()
+          });
+        } catch(e) {}
       }
 
-      await new Promise(r => setTimeout(r, 2000));
+      // Save in batches + rate limiting
+      if (allCompanies.length > 0) {
+        const unique = allCompanies.filter((c, i, self) =>
+          i === self.findIndex(t => t.website === c.website)
+        );
+        const { error } = await supabase.from("companies")
+          .upsert(unique, { onConflict: "website" });
+        if (error) console.error("Supabase error:", error.message);
+      }
+
+      await new Promise(r => setTimeout(r, 1000));
+
     } catch(err) {
-      console.error(`❌ ${err.message}`);
+      console.error(`  ❌ ${err.message}`);
     }
   }
 
-  console.log(`\nTotal companies found: ${allCompanies.length}`);
-
-  if (allCompanies.length > 0) {
-    const { error } = await supabase.from("companies").upsert(allCompanies, { onConflict: "website" });
-    if (error) console.error("Supabase error:", error.message);
-    else console.log(`✅ Saved ${allCompanies.length} to Supabase!`);
-  }
-
-  console.log("\n✅ Agent 2 Complete!");
+  console.log("\n============================================");
+  console.log(`✅ Agent 2 Complete!`);
+  console.log(`📊 Total companies found: ${allCompanies.length}`);
+  console.log(`🗄️  Saved to Supabase: companies table`);
+  console.log(`🚀 Ready for Agent 3 (Website Verifier)!`);
+  console.log("============================================\n");
 }
 
 runAgent2().catch(console.error);
