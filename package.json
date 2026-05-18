@@ -1,17 +1,13 @@
 {
   "name": "kishor-lead-engine",
   "version": "2.0.0",
-  "description": "AI Global Buyer Discovery System for Kishor Exports",
-  "main": "agents/agent1-query-builder.js",
+  "main": "agent1-query-builder.js",
   "scripts": {
-    "start": "node agents/agent1-query-builder.js",
-    "agent1": "node agents/agent1-query-builder.js",
-    "test": "node agents/agent1-query-builder.js Denmark"
+    "start": "node agent1-query-builder.js Denmark",
+    "agent2": "node agents/agent2-discovery.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
