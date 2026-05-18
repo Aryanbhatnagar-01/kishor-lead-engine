@@ -98,7 +98,7 @@ Return ONLY valid JSON in this exact format:
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5-20251001",
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
     });
