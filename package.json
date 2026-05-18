@@ -1,13 +1,14 @@
 {
   "name": "kishor-lead-engine",
   "version": "2.0.0",
-  "main": "agent1-query-builder.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node agent1-query-builder.js Denmark",
-    "agent2": "node agents/agent2-discovery.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.39.0",
+    "express": "^4.18.0",
+    "cors": "^2.8.5"
   }
 }
