@@ -1,65 +1,68 @@
-const Anthropic = require("@anthropic-ai/sdk");
+const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
-const KISHOR_CONTEXT = `
-You are an AI sourcing intelligence agent for Kishor Exports, India.
-Factory: Ranchi, India | 3,200+ workers | 600,000+ garments/month
-Products: Womenswear, Kidswear, Babywear, Denim, Organic Cotton
-Certifications: GOTS, FAIR TRADE, OEKO-TEX, OCS, SEDEX SMETA
-Experience: NEXT (UK), OVS (Italy), Carol (France)
-Target: European sustainable mid-market fashion brands
-`;
+// Denmark master data from your Excel sheet
+// These are the brands and contacts you already researched
+const DENMARK_CONTACTS = [
+  // DK Company A/S
+  { brand: "DK Company A/S", name: "Julie Leth", title: "Express Buyer", email: "jl@dkcompany.com", city: "Ikast" },
+  { brand: "DK Company A/S", name: "Nina Hornshøj", title: "Buyer", email: "nh@dkcompany.com", city: "Ikast" },
+  { brand: "DK Company A/S", name: "Mette Resting Keseler", title: "Senior Buyer", email: "mrk@dkcompany.com", city: "Ikast" },
+  { brand: "DK Company A/S", name: "Iben Arnholtz Neustädter", title: "Sourcing Manager", email: "ian@dkcompany.com", city: "Ikast" },
+  { brand: "DK Company A/S", name: "Katrine Seistrup", title: "Buying Manager", email: "ks@dkcompany.com", city: "Ikast" },
+  // Kompagniet af 1991
+  { brand: "Kompagniet af 1991", name: "Dorina Blouner", title: "Buyer", email: "db@komp1991.dk", city: "Syddanmark" },
+  { brand: "Kompagniet af 1991", name: "Suna Alsema", title: "Sourcing", email: "sa@komp1991.dk", city: "Syddanmark" },
+  // ZIZZI
+  { brand: "ZIZZI", name: "Maria Koch", title: "Head of Buying and Sourcing", email: "maria@zizzifashion.com", city: "Billund" },
+  { brand: "ZIZZI", name: "Pernille Bundgaard Dam", title: "Product Director", email: "pernille@zizzifashion.com", city: "Billund" },
+  { brand: "ZIZZI", name: "Ditte Lyng Smedegaard", title: "Category Buyer", email: "ditte@zizzifashion.com", city: "Billund" },
+  // GANNI
+  { brand: "GANNI", name: "Signe Larsen", title: "Head of Sourcing & Production", email: "signe.larsen@ganni.com", city: "Copenhagen" },
+  { brand: "GANNI", name: "Veronika Ten", title: "Buying Manager", email: "veronika.ten@ganni.com", city: "Copenhagen" },
+  // Konges Sløjd
+  { brand: "Konges Sløjd", name: "Emilie Eberhardt", title: "Product Director", email: "emiliee@kongessloejd.com", city: "Copenhagen" },
+  { brand: "Konges Sløjd", name: "Mads Bruno Andreasen", title: "Procurement Specialist", email: "madsa@kongessloejd.com", city: "Copenhagen" },
+  { brand: "Konges Sløjd", name: "Niki Christiansen", title: "Procurement Assistant", email: "nikic@kongessloejd.com", city: "Copenhagen" },
+  // MOS MOSH
+  { brand: "MOS MOSH", name: "Tina Fuglsang-Poulsen", title: "Buying Manager", email: "tfp@mosmosh.com", city: "Kolding" },
+  { brand: "MOS MOSH", name: "Mads A/S", title: "Buying Manager", email: "mas@mosmosh.com", city: "Kolding" },
+  // INDICODE
+  { brand: "INDICODE / IKS ApS", name: "Marianne Schultz", title: "Buyer", email: "ms@indicodejeans.dk", city: "Copenhagen" },
+  { brand: "INDICODE / IKS ApS", name: "Camilla Bruhn", title: "Purchasing", email: "cb@indicodejeans.dk", city: "Copenhagen" },
+];
 
-async function buildSearchQueries(country) {
-  console.log(`\nKISHOR LEAD ENGINE - Agent 1 running for: ${country}`);
+async function importContacts() {
+  console.log("\n============================================");
+  console.log("  Importing Denmark Master Data to Supabase");
+  console.log("============================================\n");
 
-  const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 2000,
-    messages: [{
-      role: "user",
-      content: `${KISHOR_CONTEXT}
+  const contacts = DENMARK_CONTACTS.map(c => ({
+    company_name: c.brand,
+    contact_name: c.name || null,
+    job_title: c.title || null,
+    email_1: c.email || null,
+    country: "Denmark",
+    source: "LinkedIn Research",
+    status: "new",
+    created_at: new Date().toISOString()
+  }));
 
-Generate 15 specific Google search queries to find fashion brands and buyers in ${country} that fit Kishor Exports.
+  const { data, error } = await supabase
+    .from("contacts")
+    .upsert(contacts, { onConflict: "email_1" });
 
-Cover: sustainable brands, kidswear, womenswear, organic cotton, department stores, buying houses, trade fair exhibitors, DTC brands, private label companies.
-
-Return ONLY valid JSON:
-{
-  "country": "${country}",
-  "total_queries": 15,
-  "queries": [
-    {
-      "id": 1,
-      "category": "Sustainable Fashion",
-      "query": "sustainable fashion brands ${country} ethical manufacturing",
-      "intent": "Find eco-conscious brands"
-    }
-  ]
-}`
-    }]
-  });
-
-  const raw = response.content[0].text;
-  const clean = raw.replace(/```json|```/g, "").trim();
-  const result = JSON.parse(clean);
-
-  console.log(`\nGenerated ${result.total_queries} queries for ${country}:\n`);
-  result.queries.forEach(q => {
-    console.log(`[${q.id}] ${q.category}`);
-    console.log(`     Query: ${q.query}`);
-    console.log(`     Intent: ${q.intent}\n`);
-  });
-
-  if (!fs.existsSync("./output")) fs.mkdirSync("./output");
-  const path = `./output/queries_${country.toLowerCase()}_${Date.now()}.json`;
-  fs.writeFileSync(path, JSON.stringify(result, null, 2));
-  console.log(`Saved to: ${path}`);
-
-  return result;
+  if (error) {
+    console.error("❌ Error:", error.message);
+  } else {
+    console.log(`✅ Imported ${contacts.length} contacts to Supabase!`);
+    console.log("🗄️  View in Supabase → Table Editor → contacts");
+  }
 }
 
-const country = process.argv[2] || "Denmark";
-buildSearchQueries(country).catch(console.error);
+importContacts().catch(console.error);
