@@ -1,4 +1,5 @@
 const https = require("https");
+const http = require("http");
 const fs = require("fs");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -7,38 +8,56 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-function searchGoogle(query) {
-  return new Promise((resolve, reject) => {
-    const params = new URLSearchParams({
-      engine: "google",
-      q: query,
-      gl: "dk",
-      hl: "en",
-      num: "10",
-      api_key: process.env.SERP_API_KEY
-    });
+function searchDuckDuckGo(query) {
+  return new Promise((resolve) => {
+    const encoded = encodeURIComponent(query);
+    const url = `https://html.duckduckgo.com/html/?q=${encoded}`;
 
     const options = {
-      hostname: "serpapi.com",
-      path: `/search?${params.toString()}`,
-      method: "GET"
+      hostname: "html.duckduckgo.com",
+      path: `/html/?q=${encoded}`,
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html",
+      }
     };
 
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve(parsed);
-        } catch(e) {
-          console.log("Parse error, raw:", data.substring(0, 300));
-          resolve({ error: "parse error" });
+        // Extract URLs from HTML
+        const results = [];
+        const urlRegex = /href="(https?:\/\/[^"]+)"/g;
+        let match;
+        const seen = new Set();
+
+        while ((match = urlRegex.exec(data)) !== null) {
+          const url = match[1];
+          if (
+            !url.includes("duckduckgo") &&
+            !url.includes("google") &&
+            !url.includes("facebook") &&
+            !url.includes("twitter") &&
+            !url.includes("youtube") &&
+            !seen.has(url)
+          ) {
+            seen.add(url);
+            results.push(url);
+          }
         }
+
+        console.log(`  Found ${results.length} URLs`);
+        resolve(results.slice(0, 10));
       });
     });
 
-    req.on("error", reject);
+    req.on("error", (err) => {
+      console.log(`  ⚠️ Error: ${err.message}`);
+      resolve([]);
+    });
+
     req.end();
   });
 }
@@ -46,6 +65,7 @@ function searchGoogle(query) {
 async function runAgent2() {
   console.log("\n============================================");
   console.log("  KISHOR LEAD ENGINE — Agent 2: Discovery");
+  console.log("  (Using DuckDuckGo — Free & Unlimited)");
   console.log("============================================\n");
 
   const outputDir = "./output";
@@ -67,65 +87,57 @@ async function runAgent2() {
   let allCompanies = [];
 
   for (const q of queries) {
-    console.log(`\n[${q.id}/15] ${q.category}`);
+    console.log(`\n[${q.id}/${queries.length}] ${q.category}`);
     console.log(`  Query: ${q.query}`);
 
-    try {
-      const result = await searchGoogle(q.query);
+    const urls = await searchDuckDuckGo(q.query);
 
-      if (result.error) {
-        console.log(`  ⚠️ Error: ${result.error}`);
-        continue;
-      }
+    for (const url of urls) {
+      try {
+        const domain = new URL(url).hostname.replace("www.", "");
+        const skipDomains = [
+          "linkedin.com", "facebook.com", "instagram.com",
+          "wikipedia.org", "youtube.com", "twitter.com",
+          "pinterest.com", "amazon.com", "ebay.com",
+          "reddit.com", "quora.com", "medium.com"
+        ];
 
-      const organic = result.organic_results || [];
-      console.log(`  ✅ Found ${organic.length} results`);
-
-      for (const item of organic) {
-        if (!item.link) continue;
-        try {
-          const domain = new URL(item.link).hostname.replace("www.", "");
-          const skipDomains = ["linkedin.com", "facebook.com", "instagram.com", "wikipedia.org", "youtube.com"];
-          if (skipDomains.some(s => domain.includes(s))) continue;
-
-          console.log(`     → ${item.title} (${domain})`);
-
+        if (!skipDomains.some(s => domain.includes(s))) {
+          console.log(`     → ${domain}`);
           allCompanies.push({
-            company_name: (item.title || domain).split(" - ")[0].split(" | ")[0].trim(),
+            company_name: domain.split(".")[0],
             website: domain,
-            full_url: item.link,
-            description: item.snippet || "",
+            full_url: url,
+            description: `Found via: ${q.query}`,
             source_query: q.query,
             category: q.category,
             country: country,
             status: "discovered",
             created_at: new Date().toISOString()
           });
-        } catch(e) {}
-      }
-
-      // Save in batches + rate limiting
-      if (allCompanies.length > 0) {
-        const unique = allCompanies.filter((c, i, self) =>
-          i === self.findIndex(t => t.website === c.website)
-        );
-        const { error } = await supabase.from("companies")
-          .upsert(unique, { onConflict: "website" });
-        if (error) console.error("Supabase error:", error.message);
-      }
-
-      await new Promise(r => setTimeout(r, 1000));
-
-    } catch(err) {
-      console.error(`  ❌ ${err.message}`);
+        }
+      } catch(e) {}
     }
+
+    // Save to Supabase in batches
+    if (allCompanies.length > 0) {
+      const unique = allCompanies.filter((c, i, self) =>
+        i === self.findIndex(t => t.website === c.website)
+      );
+      const { error } = await supabase.from("companies")
+        .upsert(unique, { onConflict: "website" });
+      if (error) console.error("  Supabase error:", error.message);
+    }
+
+    // Rate limit — be nice to DuckDuckGo
+    await new Promise(r => setTimeout(r, 3000));
   }
 
   console.log("\n============================================");
   console.log(`✅ Agent 2 Complete!`);
-  console.log(`📊 Total companies found: ${allCompanies.length}`);
-  console.log(`🗄️  Saved to Supabase: companies table`);
-  console.log(`🚀 Ready for Agent 3 (Website Verifier)!`);
+  console.log(`📊 Total companies: ${allCompanies.length}`);
+  console.log(`🗄️  Saved to Supabase!`);
+  console.log(`🚀 Ready for Agent 3!`);
   console.log("============================================\n");
 }
 
