@@ -16,9 +16,10 @@ let isRunning = false;
 let progress = { step: "", pct: 0, log: [] };
 
 function addLog(msg) {
-  progress.log.push(msg);
+  if (!msg || !msg.trim()) return;
+  progress.log.push(msg.trim());
   if (progress.log.length > 100) progress.log.shift();
-  console.log(msg);
+  console.log(msg.trim());
 }
 
 // ── STATS ─────────────────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ app.post("/search", async (req, res) => {
   addLog("Starting pipeline for " + country + "...");
   res.json({ message: "Pipeline started", country });
 
-  // Step 1 — Agent 1
+  // ── Agent 1 ──
   addLog("Agent 1: Generating search queries for " + country + "...");
   progress.step = "Agent 1";
   progress.pct = 10;
@@ -50,13 +51,13 @@ app.post("/search", async (req, res) => {
 
   agent1.stdout.on("data", data => {
     addLog(data.trim());
-    progress.pct = Math.min(35, progress.pct + 1);
+    progress.pct = Math.min(33, progress.pct + 1);
   });
   agent1.stderr.on("data", data => addLog("Warning: " + data.trim()));
 
   agent1.on("close", code1 => {
     if (code1 !== 0) {
-      addLog("Agent 1 failed!");
+      addLog("Agent 1 failed with code " + code1);
       isRunning = false;
       progress.step = "Error";
       return;
@@ -64,38 +65,38 @@ app.post("/search", async (req, res) => {
 
     addLog("Agent 1 complete! Starting Agent 2...");
     progress.step = "Agent 2";
-    progress.pct = 40;
+    progress.pct = 35;
 
-    // Step 2 — Agent 2
+    // ── Agent 2 ──
     const agent2 = exec("node agent2-discovery.js");
     currentProcess = agent2;
 
     agent2.stdout.on("data", data => {
       addLog(data.trim());
-      progress.pct = Math.min(70, progress.pct + 1);
+      progress.pct = Math.min(65, progress.pct + 1);
     });
     agent2.stderr.on("data", data => addLog("Warning: " + data.trim()));
 
     agent2.on("close", code2 => {
       if (code2 !== 0) {
-        addLog("Agent 2 failed!");
+        addLog("Agent 2 failed with code " + code2);
         isRunning = false;
         progress.step = "Error";
         currentProcess = null;
         return;
       }
 
-      addLog("Agent 2 complete! Starting Agent 3 enrichment...");
+      addLog("Agent 2 complete! Starting Agent 3 people finder...");
       progress.step = "Agent 3";
-      progress.pct = 75;
+      progress.pct = 70;
 
-      // Step 3 — Agent 3
+      // ── Agent 3 ──
       const agent3 = exec("node agent3-enrichment.js");
       currentProcess = agent3;
 
       agent3.stdout.on("data", data => {
         addLog(data.trim());
-        progress.pct = Math.min(95, progress.pct + 1);
+        progress.pct = Math.min(98, progress.pct + 1);
       });
       agent3.stderr.on("data", data => addLog("Warning: " + data.trim()));
 
@@ -105,7 +106,7 @@ app.post("/search", async (req, res) => {
         progress.pct = 100;
         progress.step = "Done";
         addLog("Pipeline complete for " + country + "!");
-        addLog("Companies + people saved. Reveal emails from CRM when needed.");
+        addLog("Check Contacts tab for buyers found.");
       });
     });
   });
@@ -135,7 +136,9 @@ app.get("/companies", async (req, res) => {
 });
 
 app.patch("/companies/:id", async (req, res) => {
-  const { error } = await supabase.from("companies").update({ status: req.body.status }).eq("id", req.params.id);
+  const { error } = await supabase.from("companies")
+    .update({ status: req.body.status })
+    .eq("id", req.params.id);
   if (error) return res.status(500).json({ error });
   res.json({ success: true });
 });
@@ -151,11 +154,11 @@ app.get("/contacts", async (req, res) => {
   res.json(data);
 });
 
-// ── REVEAL EMAIL — uses 1 credit ──────────────────────────────────────────────
+// ── REVEAL EMAIL — uses credits ───────────────────────────────────────────────
 app.post("/contacts/:id/reveal-email", async (req, res) => {
   if (!SALESHANDY_API_KEY) return res.status(500).json({ error: "SALESHANDY_API_KEY not set" });
 
-  // Get contact from Supabase
+  // Get contact
   const { data: contact, error: fetchError } = await supabase
     .from("contacts")
     .select("*")
@@ -163,22 +166,76 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
     .single();
 
   if (fetchError || !contact) return res.status(404).json({ error: "Contact not found" });
-  if (contact.email_revealed) return res.json({ email: contact.email_1, already_revealed: true });
-  if (!contact.saleshandy_person_id) return res.status(400).json({ error: "No Saleshandy person ID for this contact" });
+  if (contact.email_revealed && contact.email_1) {
+    return res.json({ email: contact.email_1, already_revealed: true });
+  }
 
   try {
-    // Call Saleshandy reveal API — uses 1 credit
-    const revealRes = await fetch(SALESHANDY_BASE + "/enrichment/reveal", {
+    let requestBody = {};
+
+    // Use LinkedIn URL if available (most accurate)
+    if (contact.linkedin_url) {
+      requestBody = { linkedin_url: [contact.linkedin_url] };
+    }
+    // Fall back to lead_id if we have it
+    else if (contact.saleshandy_lead_id) {
+      requestBody = { lead_id: [parseInt(contact.saleshandy_lead_id)] };
+    }
+    // Fall back to name + domain
+    else if (contact.first_name && contact.company_website) {
+      requestBody = {
+        full_name_with_company: [{
+          first_name: contact.first_name,
+          last_name: contact.last_name || "",
+          company_domain: contact.company_website
+        }]
+      };
+    } else {
+      return res.status(400).json({ error: "Not enough data to reveal email" });
+    }
+
+    // Step 1 — Start enrichment job
+    const enrichRes = await fetch(SALESHANDY_BASE + "/enrich/contact", {
       method: "POST",
       headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ personId: contact.saleshandy_person_id, revealEmail: true })
+      body: JSON.stringify(requestBody)
     });
+    const enrichData = await enrichRes.json();
+    const requestId = enrichData.payload?.requestId;
 
-    const revealData = await revealRes.json();
-    const email = revealData.payload?.email || null;
+    if (!requestId) {
+      return res.status(500).json({ error: "No requestId from Saleshandy", detail: enrichData });
+    }
+
+    // Step 2 — Poll for results (max 30 seconds)
+    let email = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise(r => setTimeout(r, 3000));
+
+      const statusRes = await fetch(SALESHANDY_BASE + "/enrich/status/" + requestId, {
+        headers: { "x-api-key": SALESHANDY_API_KEY }
+      });
+      const statusData = await statusRes.json();
+      const jobStatus = statusData.payload?.status;
+
+      if (jobStatus === "completed" || jobStatus === "failed") {
+        // Get results
+        const resultRes = await fetch(SALESHANDY_BASE + "/enrich/status/result/" + requestId, {
+          headers: { "x-api-key": SALESHANDY_API_KEY }
+        });
+        const resultData = await resultRes.json();
+        const results = resultData.payload?.results || [];
+
+        if (results.length > 0) {
+          const person = results[0];
+          email = person.email || person.work_email || person.personal_email || null;
+        }
+        break;
+      }
+    }
 
     if (email) {
-      // Save email to Supabase
+      // Save to Supabase
       await supabase.from("contacts").update({
         email_1: email,
         email_revealed: true,
@@ -187,8 +244,23 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
 
       res.json({ email, success: true });
     } else {
-      res.json({ email: null, success: false, message: "Email not found in database" });
+      res.json({ email: null, success: false, message: "Email not found in Saleshandy database" });
     }
+
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── CREDITS CHECK ─────────────────────────────────────────────────────────────
+app.get("/credits", async (req, res) => {
+  if (!SALESHANDY_API_KEY) return res.status(500).json({ error: "No API key" });
+  try {
+    const r = await fetch(SALESHANDY_BASE + "/credits", {
+      headers: { "x-api-key": SALESHANDY_API_KEY }
+    });
+    const data = await r.json();
+    res.json(data.payload);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
@@ -198,18 +270,19 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status: "Kishor Lead Engine API running!",
-    version: "3.0",
+    version: "3.1",
     endpoints: {
       "POST /search": "Start pipeline { country: 'Germany' }",
       "GET /status": "Check progress",
       "POST /stop": "Stop pipeline",
       "GET /companies": "All companies",
       "GET /contacts": "All contacts",
-      "POST /contacts/:id/reveal-email": "Reveal email (uses 1 credit)",
+      "POST /contacts/:id/reveal-email": "Reveal email (uses credits)",
+      "GET /credits": "Check Saleshandy credits",
       "GET /stats": "Counts"
     }
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v3.0 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v3.1 running on port " + PORT));
