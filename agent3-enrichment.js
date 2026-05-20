@@ -4,6 +4,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const SALESHANDY_API_KEY = process.env.SALESHANDY_API_KEY;
 const API_BASE = "https://open-api.saleshandy.com/v1";
 
+// ── Saleshandy API helper ─────────────────────────────────────────────────────
 async function saleshandy(endpoint, method, body) {
   const res = await fetch(API_BASE + endpoint, {
     method: method || "GET",
@@ -12,106 +13,116 @@ async function saleshandy(endpoint, method, body) {
   });
   const text = await res.text();
   try { return JSON.parse(text); }
-  catch(e) { throw new Error("Saleshandy " + res.status + ": " + text.substring(0, 300)); }
+  catch(e) { throw new Error("Saleshandy " + res.status + ": " + text.substring(0, 200)); }
 }
 
-// Industry keywords for Kishor Export
-const INDUSTRIES = [
-  "Apparel and Fashion",
-  "Textiles",
-  "Retail",
-  "Wholesale",
-  "Consumer Goods",
-  "Luxury Goods and Jewelry"
+// ── Buyer job titles for Kishor Export products ───────────────────────────────
+const BUYER_TITLES = [
+  "Buying Manager", "Head of Buying", "Buying Director",
+  "Sourcing Director", "Sourcing Manager", "Head of Sourcing",
+  "Procurement Manager", "Category Buyer", "Senior Buyer",
+  "Buyer", "Import Manager", "Merchandise Manager",
+  "Product Director", "Purchasing Manager", "Head of Product"
 ];
 
-// Buyer job titles we want
-const JOB_TITLES = [
-  "Buying Manager",
-  "Head of Buying",
-  "Sourcing Director",
-  "Sourcing Manager",
-  "Procurement Manager",
-  "Category Buyer",
-  "Head of Sourcing",
-  "Import Manager",
-  "Merchandise Manager",
-  "Product Director",
-  "Purchasing Manager",
-  "Buying Director",
-  "Senior Buyer",
-  "Buyer"
+// ── Industry groups matching Kishor products ──────────────────────────────────
+const SEARCH_CONFIGS = [
+  {
+    name: "Apparel & Fashion",
+    category: "Apparel and Fashion",
+    industries: ["Retail Apparel and Fashion", "Apparel Manufacturing"]
+  },
+  {
+    name: "Textile & Wholesale",
+    category: "Textiles",
+    industries: ["Textile Manufacturing", "Wholesale Apparel and Sewing Supplies"]
+  },
+  {
+    name: "Home Textiles & Lifestyle",
+    category: "Home Textiles",
+    industries: ["Consumer Goods", "Retail", "Luxury Goods and Jewelry", "Home Furnishings"]
+  }
 ];
 
-async function searchCompanies(country, industry, page) {
+// ── Search companies ──────────────────────────────────────────────────────────
+async function searchCompanies(country, industries, page) {
   try {
-    const data = await saleshandy("/search/companies", "POST", {
+    const body = {
       company_hq_location: { includes: [country] },
-      company_industry: { includes: [industry] },
+      is_b2b: true,
       page: page || 1
-    });
+    };
+    if (industries && industries.length > 0) {
+      body.company_industry = { includes: industries };
+    }
+    const data = await saleshandy("/search/companies", "POST", body);
     return {
       companies: data.payload?.companies || data.payload?.results || [],
-      total: data.payload?.total || data.payload?.totalRecords || 0
+      total: data.payload?.total || 0,
+      error: data.error || null
     };
   } catch(e) {
     console.log("  Company search error: " + e.message);
-    return { companies: [], total: 0 };
+    return { companies: [], total: 0, error: e.message };
   }
 }
 
-async function searchPeople(country, page) {
+// ── Search people ─────────────────────────────────────────────────────────────
+async function searchPeople(country, industries, page) {
   try {
-    const data = await saleshandy("/search/people", "POST", {
-      job_title: { includes: JOB_TITLES },
+    const body = {
+      job_title: { includes: BUYER_TITLES },
       company_hq_location: { includes: [country] },
-      company_industry: { includes: INDUSTRIES },
+      is_b2b: true,
       page: page || 1
-    });
+    };
+    if (industries && industries.length > 0) {
+      body.company_industry = { includes: industries };
+    }
+    const data = await saleshandy("/search/people", "POST", body);
     return {
       people: data.payload?.leads || data.payload?.results || [],
-      total: data.payload?.total || data.payload?.totalRecords || 0
+      total: data.payload?.total || 0,
+      error: data.error || null
     };
   } catch(e) {
     console.log("  People search error: " + e.message);
-    return { people: [], total: 0 };
+    return { people: [], total: 0, error: e.message };
   }
 }
 
-async function saveCompanies(companies, country) {
-  if (!companies.length) return;
+// ── Save companies to Supabase ────────────────────────────────────────────────
+async function saveCompanies(companies, country, category) {
+  if (!companies || companies.length === 0) return 0;
   const rows = companies.map(c => ({
-    company_name: c.name || c.company_name || c.organization_name || "Unknown",
-    website: c.domain || c.website || c.primary_domain || null,
-    full_url: c.website_url || (c.domain ? "https://" + c.domain : null),
+    company_name: c.name || c.company_name || "Unknown",
+    website: c.domain || c.primary_domain || null,
+    full_url: c.domain ? "https://" + c.domain : null,
     description: c.description || null,
-    category: c.industry || "Fashion",
+    category: category,
     country: country,
-    company_size: c.employee_count ? String(c.employee_count) : (c.size || null),
+    company_size: c.employee_count ? String(c.employee_count) : null,
     linkedin_company_url: c.linkedin_url || null,
+    industry: c.industry || category,
     status: "discovered",
     enriched: true,
     created_at: new Date().toISOString()
-  }));
+  })).filter(c => c.website);
 
-  const unique = rows.filter((c, i, self) =>
-    c.website && i === self.findIndex(t => t.website === c.website)
-  );
-
-  if (unique.length === 0) return;
-
+  if (rows.length === 0) return 0;
   const { error } = await supabase.from("companies")
-    .upsert(unique, { onConflict: "website", ignoreDuplicates: true });
+    .upsert(rows, { onConflict: "website", ignoreDuplicates: true });
   if (error) console.log("  Company save error: " + error.message);
-  else console.log("  Saved " + unique.length + " companies");
+  return rows.length;
 }
 
+// ── Save people to Supabase ───────────────────────────────────────────────────
 async function savePeople(people, country) {
-  if (!people.length) return 0;
+  if (!people || people.length === 0) return 0;
 
   const contacts = people.map(p => ({
-    company_name: p.organization_name || p.company_name || p.company || null,
-    company_website: p.organization_domain || p.company_domain || p.domain || null,
+    company_name: p.organization_name || p.company_name || null,
+    company_website: p.organization_domain || p.company_domain || null,
     contact_name: ((p.first_name || "") + " " + (p.last_name || "")).trim(),
     first_name: p.first_name || null,
     last_name: p.last_name || null,
@@ -125,113 +136,124 @@ async function savePeople(people, country) {
     source: "saleshandy_search",
     status: "new",
     created_at: new Date().toISOString()
-  }));
+  })).filter(p => p.contact_name && p.contact_name.trim() !== "");
 
-  // Filter out contacts without linkedin_url (need for upsert key)
+  if (contacts.length === 0) return 0;
+
+  // Split by linkedin presence for upsert key
   const withLinkedin = contacts.filter(c => c.linkedin_url);
   const withoutLinkedin = contacts.filter(c => !c.linkedin_url);
-
   let saved = 0;
 
   if (withLinkedin.length > 0) {
     const { error } = await supabase.from("contacts")
       .upsert(withLinkedin, { onConflict: "linkedin_url", ignoreDuplicates: true });
-    if (error) console.log("  Contact save error: " + error.message);
-    else saved += withLinkedin.length;
+    if (!error) saved += withLinkedin.length;
+    else console.log("  LinkedIn upsert error: " + error.message);
   }
 
   if (withoutLinkedin.length > 0) {
     const { error } = await supabase.from("contacts").insert(withoutLinkedin);
-    if (error) console.log("  Contact insert error: " + error.message);
-    else saved += withoutLinkedin.length;
+    if (!error) saved += withoutLinkedin.length;
   }
-
   return saved;
 }
 
+// ── Main Agent 3 ──────────────────────────────────────────────────────────────
 async function runAgent3() {
   console.log("============================================");
-  console.log("AGENT 3 — Saleshandy Direct Search");
-  console.log("Finds: Real companies + Real buyers");
-  console.log("Cost: FREE (no credits for search)");
+  console.log("AGENT 3 — Saleshandy Search");
+  console.log("Companies + Buyers FREE (emails on demand)");
   console.log("============================================\n");
 
   if (!SALESHANDY_API_KEY) { console.error("SALESHANDY_API_KEY not set!"); process.exit(1); }
 
-  // Get country from command line or Supabase
   const country = process.argv[2] || "Denmark";
   console.log("Country: " + country + "\n");
 
   // Check credits
   try {
     const credits = await saleshandy("/credits");
-    console.log("Credits: " + JSON.stringify(credits.payload));
+    console.log("Credits: " + credits.payload?.totalCredits + " total, " + credits.payload?.creditConsumedThisMonth + " used this month\n");
   } catch(e) { console.log("Credits check failed: " + e.message); }
 
   let totalCompanies = 0;
   let totalPeople = 0;
 
-  // STEP 1 — Search companies by industry
-  console.log("\n--- STEP 1: Finding Companies ---");
-  for (const industry of INDUSTRIES) {
-    console.log("\nIndustry: " + industry);
-    const result = await searchCompanies(country, industry, 1);
-    console.log("Found: " + result.total + " companies");
+  // ── Process each search config ──────────────────────────────────────────────
+  for (const config of SEARCH_CONFIGS) {
+    console.log("=== " + config.name + " ===");
 
-    if (result.companies.length > 0) {
-      await saveCompanies(result.companies, country);
-      totalCompanies += result.companies.length;
+    // STEP 1 — Search companies
+    const compResult = await searchCompanies(country, config.industries, 1);
+    console.log("Companies found: " + compResult.total);
 
-      // Get page 2 if more results
-      if (result.total > result.companies.length) {
-        const result2 = await searchCompanies(country, industry, 2);
-        if (result2.companies.length > 0) {
-          await saveCompanies(result2.companies, country);
-          totalCompanies += result2.companies.length;
+    if (compResult.error) {
+      console.log("Error: " + compResult.error);
+    } else if (compResult.companies.length > 0) {
+      const saved = await saveCompanies(compResult.companies, country, config.category);
+      totalCompanies += saved;
+      console.log("Companies saved: " + saved);
+
+      // Get pages 2-5 if more results
+      const maxPages = Math.min(5, Math.ceil(compResult.total / 25));
+      for (let page = 2; page <= maxPages; page++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const more = await searchCompanies(country, config.industries, page);
+        if (more.companies.length > 0) {
+          const moreSaved = await saveCompanies(more.companies, country, config.category);
+          totalCompanies += moreSaved;
         }
       }
     }
+
     await new Promise(r => setTimeout(r, 2000));
-  }
 
-  // STEP 2 — Search buyers directly
-  console.log("\n--- STEP 2: Finding Buyers ---");
-  const peopleResult = await searchPeople(country, 1);
-  console.log("Total buyers found: " + peopleResult.total);
+    // STEP 2 — Search people (buyers)
+    const peopleResult = await searchPeople(country, config.industries, 1);
+    console.log("Buyers found: " + peopleResult.total);
 
-  if (peopleResult.people.length > 0) {
-    // Log sample
-    console.log("\nSample buyers:");
-    peopleResult.people.slice(0, 5).forEach(p => {
-      console.log("  -> " + (p.first_name || "") + " " + (p.last_name || "") +
-        " | " + (p.job_title || p.title || "—") +
-        " | " + (p.organization_name || p.company || "—"));
-    });
+    if (peopleResult.error) {
+      console.log("Error: " + peopleResult.error);
+    } else if (peopleResult.people.length > 0) {
+      // Show sample
+      peopleResult.people.slice(0, 3).forEach(p => {
+        const name = ((p.first_name || "") + " " + (p.last_name || "")).trim();
+        const title = p.job_title || p.title || "—";
+        const company = p.organization_name || p.company_name || "—";
+        console.log("  -> " + name + " | " + title + " | " + company);
+      });
 
-    const saved = await savePeople(peopleResult.people, country);
-    totalPeople += saved;
+      const saved = await savePeople(peopleResult.people, country);
+      totalPeople += saved;
+      console.log("People saved (page 1): " + saved);
 
-    // Get more pages
-    if (peopleResult.total > peopleResult.people.length) {
-      for (let page = 2; page <= Math.min(5, Math.ceil(peopleResult.total / 25)); page++) {
+      // Get more pages
+      const maxPages = Math.min(5, Math.ceil(peopleResult.total / 25));
+      for (let page = 2; page <= maxPages; page++) {
         await new Promise(r => setTimeout(r, 2000));
-        const more = await searchPeople(country, page);
+        const more = await searchPeople(country, config.industries, page);
         if (more.people.length > 0) {
           const moreSaved = await savePeople(more.people, country);
           totalPeople += moreSaved;
-          console.log("Page " + page + ": saved " + moreSaved + " more buyers");
+          console.log("Page " + page + ": " + moreSaved + " more saved");
         }
       }
     }
+
+    await new Promise(r => setTimeout(r, 2000));
+    console.log("");
   }
 
-  console.log("\n============================================");
+  console.log("============================================");
   console.log("Agent 3 Complete!");
   console.log("Companies saved: " + totalCompanies);
-  console.log("Buyers saved: " + totalPeople);
-  console.log("Credits used: 0 (search is FREE)");
-  console.log("Reveal emails from CRM when needed");
+  console.log("People saved: " + totalPeople);
+  console.log("Emails: 0 (click Reveal in CRM = 1 credit each)");
   console.log("============================================\n");
 }
 
-runAgent3().catch(err => { console.error("Agent 3 error: " + err.message); process.exit(1); });
+runAgent3().catch(err => {
+  console.error("Agent 3 fatal error: " + err.message);
+  process.exit(1);
+});
