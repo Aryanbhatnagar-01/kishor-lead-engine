@@ -31,7 +31,7 @@ app.get("/stats", async (req, res) => {
   res.json({ companies: c.count || 0, contacts: ct.count || 0 });
 });
 
-// ── START PIPELINE
+// ── START PIPELINE — Saleshandy Direct Search
 app.post("/search", async (req, res) => {
   const { country } = req.body;
   if (!country) return res.status(400).json({ error: "Country required" });
@@ -39,48 +39,43 @@ app.post("/search", async (req, res) => {
 
   isRunning = true;
   progress = { step: "Starting", pct: 5, log: [] };
-  addLog("Starting pipeline for " + country + "...");
+  addLog("Starting search for " + country + "...");
   res.json({ message: "Pipeline started", country });
 
-  addLog("Agent 1: Generating search queries for " + country + "...");
-  progress.step = "Agent 1";
-  progress.pct = 10;
+  // Skip Agent 1+2 — go straight to Saleshandy
+  addLog("Agent 3: Searching Saleshandy for companies and buyers in " + country + "...");
+  progress.step = "Agent 3";
+  progress.pct = 20;
 
-  const agent1 = exec("node agent1-query-builder.js \"" + country + "\"");
-  agent1.stdout.on("data", data => { addLog(data.trim()); progress.pct = Math.min(33, progress.pct + 1); });
-  agent1.stderr.on("data", data => addLog("Warning: " + data.trim()));
-  agent1.on("close", code1 => {
-    if (code1 !== 0) { addLog("Agent 1 failed"); isRunning = false; progress.step = "Error"; return; }
-    addLog("Agent 1 complete! Starting Agent 2...");
-    progress.step = "Agent 2"; progress.pct = 35;
+  const agent3 = exec("node agent3-enrichment.js \"" + country + "\"");
+  currentProcess = agent3;
 
-    const agent2 = exec("node agent2-discovery.js");
-    currentProcess = agent2;
-    agent2.stdout.on("data", data => { addLog(data.trim()); progress.pct = Math.min(65, progress.pct + 1); });
-    agent2.stderr.on("data", data => addLog("Warning: " + data.trim()));
-    agent2.on("close", code2 => {
-      if (code2 !== 0) { addLog("Agent 2 failed"); isRunning = false; progress.step = "Error"; currentProcess = null; return; }
-      addLog("Agent 2 complete! Starting Agent 3...");
-      progress.step = "Agent 3"; progress.pct = 70;
+  agent3.stdout.on("data", data => {
+    addLog(data.trim());
+    progress.pct = Math.min(95, progress.pct + 2);
+  });
+  agent3.stderr.on("data", data => addLog("Warning: " + data.trim()));
 
-      const agent3 = exec("node agent3-enrichment.js");
-      currentProcess = agent3;
-      agent3.stdout.on("data", data => { addLog(data.trim()); progress.pct = Math.min(98, progress.pct + 1); });
-      agent3.stderr.on("data", data => addLog("Warning: " + data.trim()));
-      agent3.on("close", code3 => {
-        isRunning = false; currentProcess = null;
-        progress.pct = 100; progress.step = "Done";
-        addLog("Pipeline complete for " + country + "!");
-        addLog("Check Contacts tab for buyers found.");
-      });
-    });
+  agent3.on("close", code => {
+    isRunning = false;
+    currentProcess = null;
+    progress.pct = 100;
+    progress.step = "Done";
+    if (code !== 0) {
+      addLog("Search failed with code " + code);
+      progress.step = "Error";
+    } else {
+      addLog("Search complete for " + country + "!");
+      addLog("Check Companies and Contacts tabs!");
+    }
   });
 });
 
 // ── STOP
 app.post("/stop", (req, res) => {
   if (currentProcess) { currentProcess.kill(); currentProcess = null; }
-  isRunning = false; progress.step = "Stopped";
+  isRunning = false;
+  progress.step = "Stopped";
   addLog("Stopped by user.");
   res.json({ message: "Stopped" });
 });
@@ -119,6 +114,7 @@ app.get("/contacts", async (req, res) => {
 // ── REVEAL EMAIL
 app.post("/contacts/:id/reveal-email", async (req, res) => {
   if (!SALESHANDY_API_KEY) return res.status(500).json({ error: "SALESHANDY_API_KEY not set" });
+
   const { data: contact, error: fetchError } = await supabase.from("contacts").select("*").eq("id", req.params.id).single();
   if (fetchError || !contact) return res.status(404).json({ error: "Contact not found" });
   if (contact.email_revealed && contact.email_1) return res.json({ email: contact.email_1, already_revealed: true });
@@ -130,7 +126,11 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
     else if (contact.first_name && contact.company_website) requestBody = { full_name_with_company: [{ first_name: contact.first_name, last_name: contact.last_name || "", company_domain: contact.company_website }] };
     else return res.status(400).json({ error: "Not enough data to reveal email" });
 
-    const enrichRes = await fetch(SALESHANDY_BASE + "/enrich/contact", { method: "POST", headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" }, body: JSON.stringify(requestBody) });
+    const enrichRes = await fetch(SALESHANDY_BASE + "/enrich/contact", {
+      method: "POST",
+      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody)
+    });
     const enrichData = await enrichRes.json();
     const requestId = enrichData.payload?.requestId;
     if (!requestId) return res.status(500).json({ error: "No requestId", detail: enrichData });
@@ -186,18 +186,33 @@ app.get("/test-saleshandy", async (req, res) => {
     });
     const data = await r.json();
     const comps = data.payload?.companies || data.payload?.results || [];
-    results.company_search = { total: data.payload?.total || 0, sample: comps.slice(0, 3), keys: Object.keys(data.payload || {}), company_fields: comps[0] ? Object.keys(comps[0]) : [] };
+    results.company_search = {
+      total: data.payload?.total || 0,
+      sample: comps.slice(0, 3),
+      company_fields: comps[0] ? Object.keys(comps[0]) : [],
+      raw_payload_keys: Object.keys(data.payload || {})
+    };
   } catch(e) { results.company_search = { error: e.message }; }
 
   try {
     const r = await fetch(SALESHANDY_BASE + "/search/people", {
       method: "POST",
       headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ job_title: { includes: ["Buying Manager", "Sourcing Director", "Head of Buying"] }, company_hq_location: { includes: ["Denmark"] }, company_industry: { includes: ["Apparel and Fashion"] }, page: 1 })
+      body: JSON.stringify({
+        job_title: { includes: ["Buying Manager", "Sourcing Director", "Head of Buying"] },
+        company_hq_location: { includes: ["Denmark"] },
+        company_industry: { includes: ["Apparel and Fashion"] },
+        page: 1
+      })
     });
     const data = await r.json();
     const leads = data.payload?.leads || data.payload?.results || [];
-    results.people_search = { total: data.payload?.total || 0, sample: leads.slice(0, 3), keys: Object.keys(data.payload || {}), person_fields: leads[0] ? Object.keys(leads[0]) : [] };
+    results.people_search = {
+      total: data.payload?.total || 0,
+      sample: leads.slice(0, 3),
+      person_fields: leads[0] ? Object.keys(leads[0]) : [],
+      raw_payload_keys: Object.keys(data.payload || {})
+    };
   } catch(e) { results.people_search = { error: e.message }; }
 
   res.json(results);
@@ -207,14 +222,15 @@ app.get("/test-saleshandy", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     status: "Kishor Lead Engine API running!",
-    version: "3.2",
+    version: "4.0",
+    description: "Now using Saleshandy direct search — real companies + real buyers!",
     endpoints: {
-      "POST /search": "Start pipeline { country: 'Germany' }",
+      "POST /search": "Search { country: 'Denmark' } — finds real companies + buyers",
       "GET /status": "Check progress",
-      "POST /stop": "Stop pipeline",
+      "POST /stop": "Stop search",
       "GET /companies": "All companies",
-      "GET /contacts": "All contacts",
-      "POST /contacts/:id/reveal-email": "Reveal email (uses credits)",
+      "GET /contacts": "All contacts with buyer details",
+      "POST /contacts/:id/reveal-email": "Reveal email (uses 1 credit)",
       "GET /credits": "Check Saleshandy credits",
       "GET /test-saleshandy": "Test Saleshandy API",
       "GET /stats": "Counts"
@@ -223,4 +239,4 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v3.2 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v4.0 running on port " + PORT));
