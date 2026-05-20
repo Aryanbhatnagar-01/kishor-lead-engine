@@ -266,6 +266,65 @@ app.get("/credits", async (req, res) => {
   }
 });
 
+// ── TEST SALESHANDY ───────────────────────────────────────────────────────────
+app.get("/test-saleshandy", async (req, res) => {
+  if (!SALESHANDY_API_KEY) return res.json({ error: "SALESHANDY_API_KEY not set" });
+
+  const results = {};
+
+  // Test 1 — Credits
+  try {
+    const r = await fetch(SALESHANDY_BASE + "/credits", {
+      headers: { "x-api-key": SALESHANDY_API_KEY }
+    });
+    results.credits = await r.json();
+  } catch(e) { results.credits = { error: e.message }; }
+
+  // Test 2 — Company search Denmark fashion
+  try {
+    const r = await fetch(SALESHANDY_BASE + "/search/companies", {
+      method: "POST",
+      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        company_hq_location: { includes: ["Denmark"] },
+        company_industry: { includes: ["Apparel and Fashion"] },
+        page: 1
+      })
+    });
+    const data = await r.json();
+    results.company_search = {
+      total: data.payload?.total || data.payload?.totalRecords || 0,
+      sample: (data.payload?.companies || data.payload?.results || []).slice(0, 3),
+      raw_keys: Object.keys(data.payload || {}),
+      first_company_keys: (data.payload?.companies || data.payload?.results || [])[0] ? Object.keys((data.payload?.companies || data.payload?.results || [])[0]) : []
+    };
+  } catch(e) { results.company_search = { error: e.message }; }
+
+  // Test 3 — People search Denmark fashion buyers
+  try {
+    const r = await fetch(SALESHANDY_BASE + "/search/people", {
+      method: "POST",
+      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_title: { includes: ["Buying Manager", "Sourcing Director", "Head of Buying", "Sourcing Manager"] },
+        company_hq_location: { includes: ["Denmark"] },
+        company_industry: { includes: ["Apparel and Fashion"] },
+        page: 1
+      })
+    });
+    const data = await r.json();
+    const leads = data.payload?.leads || data.payload?.results || [];
+    results.people_search = {
+      total: data.payload?.total || data.payload?.totalRecords || 0,
+      sample: leads.slice(0, 3),
+      raw_keys: Object.keys(data.payload || {}),
+      first_person_keys: leads[0] ? Object.keys(leads[0]) : []
+    };
+  } catch(e) { results.people_search = { error: e.message }; }
+
+  res.json(results);
+});
+
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
