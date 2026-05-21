@@ -71,6 +71,35 @@ app.post("/search", async (req, res) => {
   });
 });
 
+// ── HUNTER SCRAPER ────────────────────────────────────────────────────────────
+app.post("/scrape-hunter", async (req, res) => {
+  const { country } = req.body;
+  if (!country) return res.status(400).json({ error: "Country required" });
+  if (isRunning) return res.status(400).json({ error: "Already running. Stop first." });
+
+  isRunning = true;
+  progress = { step: "Scraping", pct: 5, log: [] };
+  addLog(`Starting Hunter UI scraper for ${country}...`);
+  addLog("No credits used — UI automation!");
+  res.json({ message: "Scraper started", country });
+
+  const scraper = exec(`node hunter-scraper.js "${country}"`);
+  currentProcess = scraper;
+
+  scraper.stdout.on("data", data => {
+    addLog(data.trim());
+    progress.pct = Math.min(95, progress.pct + 3);
+  });
+  scraper.stderr.on("data", data => addLog("Warning: " + data.trim()));
+  scraper.on("close", code => {
+    isRunning = false;
+    currentProcess = null;
+    progress.pct = 100;
+    progress.step = code !== 0 ? "Error" : "Done";
+    addLog(code !== 0 ? "Scraper failed" : "Scraper complete! Check CRM for results.");
+  });
+});
+
 // ── STOP ──────────────────────────────────────────────────────────────────────
 app.post("/stop", (req, res) => {
   if (currentProcess) { currentProcess.kill(); currentProcess = null; }
@@ -114,7 +143,7 @@ app.get("/contacts", async (req, res) => {
   res.json(data);
 });
 
-// ── REVEAL EMAIL — Hunter domain search (1 credit) ────────────────────────────
+// ── REVEAL EMAIL — Hunter email finder ────────────────────────────────────────
 app.post("/contacts/:id/reveal-email", async (req, res) => {
   if (!HUNTER_KEY) return res.status(500).json({ error: "HUNTER_API_KEY not set" });
 
@@ -132,21 +161,21 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
     }
 
     const params = new URLSearchParams({
-      api_key: HUNTER_KEY,
-      domain: contact.company_website,
+      api_key:    HUNTER_KEY,
+      domain:     contact.company_website,
       first_name: contact.first_name || "",
-      last_name: contact.last_name || "",
+      last_name:  contact.last_name  || "",
     });
 
-    const r = await fetch(`${HUNTER_BASE}/email-finder?${params}`);
+    const r    = await fetch(`${HUNTER_BASE}/email-finder?${params}`);
     const data = await r.json();
     const email = data.data?.email || null;
 
     if (email) {
       await supabase.from("contacts").update({
-        email_1: email,
-        email_revealed: true,
-        email_revealed_at: new Date().toISOString()
+        email_1:            email,
+        email_revealed:     true,
+        email_revealed_at:  new Date().toISOString()
       }).eq("id", req.params.id);
       res.json({ email, success: true, confidence: data.data?.score });
     } else {
@@ -161,12 +190,12 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
 app.get("/credits", async (req, res) => {
   if (!HUNTER_KEY) return res.status(500).json({ error: "No HUNTER_API_KEY" });
   try {
-    const r = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
+    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
     const data = await r.json();
     res.json({
-      searches_left: data.data?.requests?.searches?.available,
-      verifications_left: data.data?.requests?.verifications?.available,
-      plan: data.data?.plan_name
+      searches_left:       data.data?.requests?.searches?.available,
+      verifications_left:  data.data?.requests?.verifications?.available,
+      plan:                data.data?.plan_name
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -176,46 +205,25 @@ app.get("/test-hunter", async (req, res) => {
   if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
   const results = {};
 
-  // Account info
   try {
-    const r = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
+    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
     const data = await r.json();
     results.account = {
-      plan: data.data?.plan_name,
-      searches_left: data.data?.requests?.searches?.available,
-      verifications_left: data.data?.requests?.verifications?.available
+      plan:                data.data?.plan_name,
+      searches_left:       data.data?.requests?.searches?.available,
+      verifications_left:  data.data?.requests?.verifications?.available
     };
   } catch(e) { results.account = { error: e.message }; }
 
-  // Test Discover API
-  try {
-    const url = `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included[]=DK&q=fashion&limit=5`;
-    const r = await fetch(url);
-    const text = await r.text();
-    if (text.startsWith("<")) {
-      results.discover = { error: "Returns HTML — Discover needs paid plan" };
-    } else {
-      const data = JSON.parse(text);
-      results.discover = {
-        total: data.meta?.total || 0,
-        companies: (data.data?.companies || []).slice(0, 3).map(c => ({
-          name: c.name, domain: c.domain, industry: c.industry
-        })),
-        errors: data.errors || null
-      };
-    }
-  } catch(e) { results.discover = { error: e.message }; }
-
-  // Test Domain Search (BESTSELLER)
   try {
     const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: "bestseller.com", limit: 5 });
-    const r = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
+    const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
     const data = await r.json();
     results.domain_search = {
-      company: data.data?.organization,
+      company:      data.data?.organization,
       total_emails: data.meta?.results || 0,
-      sample: (data.data?.emails || []).slice(0, 3).map(e => ({
-        name: `${e.first_name} ${e.last_name}`,
+      sample:       (data.data?.emails || []).slice(0, 3).map(e => ({
+        name:  `${e.first_name} ${e.last_name}`,
         title: e.position,
         email: e.value
       }))
@@ -225,16 +233,16 @@ app.get("/test-hunter", async (req, res) => {
   res.json(results);
 });
 
-// ── TEST COMPANIES (5 Danish brands) ─────────────────────────────────────────
+// ── TEST 50 COMPANIES ─────────────────────────────────────────────────────────
 app.get("/test-companies", async (req, res) => {
   if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
 
   const TEST_COMPANIES = [
-    { name: "BESTSELLER",    domain: "bestseller.com" },
-    { name: "Ganni",         domain: "ganni.com" },
-    { name: "Samsoe Samsoe", domain: "samsoe.com" },
-    { name: "Les Deux",      domain: "lesdeux.com" },
-    { name: "Gestuz",        domain: "gestuz.com" },
+    { name: "BESTSELLER",       domain: "bestseller.com" },
+    { name: "Ganni",            domain: "ganni.com" },
+    { name: "Samsoe Samsoe",    domain: "samsoe.com" },
+    { name: "Les Deux",         domain: "lesdeux.com" },
+    { name: "Gestuz",           domain: "gestuz.com" },
   ];
 
   const TARGET_TITLES = [
@@ -246,7 +254,7 @@ app.get("/test-companies", async (req, res) => {
   for (const company of TEST_COMPANIES) {
     try {
       const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: company.domain, limit: 10, type: "personal" });
-      const r = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
+      const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
       const data = await r.json();
       const allEmails = data.data?.emails || [];
       const buyers = allEmails.filter(e => {
@@ -254,16 +262,16 @@ app.get("/test-companies", async (req, res) => {
         return TARGET_TITLES.some(t => title.includes(t));
       });
       results.push({
-        company: company.name,
-        domain: company.domain,
+        company:      company.name,
+        domain:       company.domain,
         total_people: data.meta?.results || 0,
         buyers_found: buyers.length,
-        buyers: buyers.map(e => ({
-          name: `${e.first_name || ""} ${e.last_name || ""}`.trim(),
-          title: e.position || "—",
-          email: e.value || "—",
-          linkedin: e.linkedin || null,
-          confidence: e.confidence || null
+        buyers:       buyers.map(e => ({
+          name:       `${e.first_name || ""} ${e.last_name || ""}`.trim(),
+          title:      e.position    || "—",
+          email:      e.value       || "—",
+          linkedin:   e.linkedin    || null,
+          confidence: e.confidence  || null
         }))
       });
       await new Promise(r => setTimeout(r, 800));
@@ -274,165 +282,25 @@ app.get("/test-companies", async (req, res) => {
   res.json({ test: "5 Danish Fashion Companies", results });
 });
 
-// ── TEST HUNTER SEARCH (Discover API test) ────────────────────────────────────
-app.get("/test-hunter-search", async (req, res) => {
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-  const country = req.query.country || "DK";
-  const results = {};
-
-  // Try Discover API with correct parameter format
-  const formats = [
-    `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included[]=${country}&q=fashion&limit=5`,
-    `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included%5B%5D=${country}&q=fashion&limit=5`,
-  ];
-
-  for (let i = 0; i < formats.length; i++) {
-    try {
-      const r = await fetch(formats[i]);
-      const text = await r.text();
-      if (text.startsWith("<")) {
-        results[`format_${i+1}`] = { error: "HTML response — needs paid plan" };
-      } else {
-        const data = JSON.parse(text);
-        results[`format_${i+1}`] = {
-          total: data.meta?.total || 0,
-          companies: (data.data?.companies || []).slice(0, 3),
-          errors: data.errors || null
-        };
-      }
-    } catch(e) {
-      results[`format_${i+1}`] = { error: e.message };
-    }
-  }
-
-  res.json(results);
-});
-
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v6.0 — Hunter Powered!",
+    status: "Kishor Lead Engine v7.0 — Hunter + Puppeteer Scraper!",
     endpoints: {
-      "POST /search": "Search by country",
-      "GET /status": "Check progress",
-      "GET /companies": "All companies",
-      "GET /contacts": "All contacts",
+      "POST /search":              "Search by country (uses Hunter API)",
+      "POST /scrape-hunter":       "Scrape Hunter UI — NO credits used!",
+      "GET /status":               "Check progress",
+      "POST /stop":                "Stop current job",
+      "GET /companies":            "All companies",
+      "GET /contacts":             "All contacts",
       "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "GET /credits": "Check Hunter credits",
-      "GET /test-hunter": "Test Hunter API",
-      "GET /test-companies": "Test 5 Danish companies",
-      "GET /test-hunter-search?country=DK": "Test Discover API",
-      "GET /stats": "DB counts"
+      "GET /credits":              "Check Hunter credits",
+      "GET /test-hunter":          "Test Hunter API",
+      "GET /test-companies":       "Test 5 Danish companies",
+      "GET /stats":                "DB counts"
     }
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v6.0 running on port " + PORT));
-
-// ── TEST 50 COMPANIES — NO CREDITS ────────────────────────────────────────────
-app.get("/test-50-companies", async (req, res) => {
-  const HUNTER_KEY = process.env.HUNTER_API_KEY;
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-
-  const COMPANIES = [
-    // Denmark
-    { name: "BESTSELLER",        domain: "bestseller.com" },
-    { name: "Ganni",             domain: "ganni.com" },
-    { name: "Samsoe Samsoe",     domain: "samsoe.com" },
-    { name: "Les Deux",          domain: "lesdeux.com" },
-    { name: "Gestuz",            domain: "gestuz.com" },
-    { name: "Selected",          domain: "selected.com" },
-    { name: "Jack Jones",        domain: "jackjones.com" },
-    { name: "Vero Moda",         domain: "veromoda.com" },
-    { name: "Only",              domain: "only.com" },
-    { name: "Name It",           domain: "nameit.com" },
-    { name: "Bruuns Bazaar",     domain: "bruunsbazaar.com" },
-    { name: "Stine Goya",        domain: "stinegoya.com" },
-    { name: "By Malene Birger",  domain: "bymalenebirger.com" },
-    { name: "Rotate Birger",     domain: "rotatebirger.com" },
-    { name: "Norse Projects",    domain: "norseprojects.com" },
-    { name: "Wood Wood",         domain: "woodwood.com" },
-    { name: "Soulland",          domain: "soulland.com" },
-    { name: "Inwear",            domain: "inwear.com" },
-    { name: "Part Two",          domain: "parttwo.com" },
-    { name: "Fransa",            domain: "fransa.com" },
-    { name: "Kaffe Fashion",     domain: "kaffefashion.com" },
-    { name: "Cream Fashion",     domain: "creamfashion.com" },
-    { name: "Ichi",              domain: "ichicph.com" },
-    { name: "Noa Noa",           domain: "noa-noa.com" },
-    { name: "Saint Tropez",      domain: "sainttropez.com" },
-    { name: "Soaked in Luxury",  domain: "soakedinluxury.com" },
-    { name: "Zizzi",             domain: "zizzi.dk" },
-    { name: "Han Kjobenhavn",    domain: "hankjobenhavn.com" },
-    { name: "Holzweiler",        domain: "holzweiler.com" },
-    { name: "Tiger of Sweden",   domain: "tigerofsweden.com" },
-    { name: "Filippa K",         domain: "filippa-k.com" },
-    { name: "Mads Norgaard",     domain: "madsnorgaard.com" },
-    { name: "Day Birger",        domain: "day.dk" },
-    { name: "Remain Birger",     domain: "remaincph.com" },
-    { name: "Mamalicious",       domain: "mamalicious.com" },
-    { name: "Vila Clothes",      domain: "vila.com" },
-    { name: "Noisy May",         domain: "noisymay.com" },
-    { name: "Pieces",            domain: "pieces.com" },
-    { name: "Object",            domain: "object.dk" },
-    { name: "b.young",           domain: "byoung.dk" },
-    // Germany
-    { name: "Hugo Boss",         domain: "hugoboss.com" },
-    { name: "Zalando",           domain: "zalando.com" },
-    { name: "s.Oliver",          domain: "soliver.com" },
-    { name: "Tom Tailor",        domain: "tom-tailor.com" },
-    { name: "Marc O Polo",       domain: "marc-o-polo.com" },
-    { name: "Armedangels",       domain: "armedangels.com" },
-    { name: "About You",         domain: "aboutyou.com" },
-    { name: "Gerry Weber",       domain: "gerryweber.com" },
-    { name: "Brax",              domain: "brax.com" },
-    { name: "Street One",        domain: "street-one.de" },
-  ];
-
-  const results = [];
-  let totalPeople = 0;
-
-  for (const company of COMPANIES) {
-    try {
-      // Domain search — gets all people, NO email verification = NO credits used
-      const params = new URLSearchParams({
-        api_key: HUNTER_KEY,
-        domain:  company.domain,
-        limit:   10,
-      });
-
-      const r    = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
-      const data = await r.json();
-      const people = data.data?.emails || [];
-
-      const contacts = people.map(p => ({
-        name:       `${p.first_name || ""} ${p.last_name || ""}`.trim(),
-        title:      p.position   || "—",
-        email:      p.value      || "—",
-        linkedin:   p.linkedin   || null,
-        confidence: p.confidence || null
-      }));
-
-      totalPeople += contacts.length;
-
-      results.push({
-        company:      company.name,
-        domain:       company.domain,
-        total_people: data.meta?.results || 0,
-        contacts
-      });
-
-      await new Promise(r => setTimeout(r, 500));
-    } catch(e) {
-      results.push({ company: company.name, domain: company.domain, error: e.message });
-    }
-  }
-
-  res.json({
-    message:          "Hunter Domain Search — 50 companies — NO credits used",
-    companies_tested: COMPANIES.length,
-    total_people:     totalPeople,
-    results
-  });
-});
+app.listen(PORT, () => console.log("Kishor Lead Engine v7.0 running on port " + PORT));
