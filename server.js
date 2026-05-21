@@ -329,3 +329,110 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log("Kishor Lead Engine v6.0 running on port " + PORT));
+
+// ── TEST 50 COMPANIES — NO CREDITS ────────────────────────────────────────────
+app.get("/test-50-companies", async (req, res) => {
+  const HUNTER_KEY = process.env.HUNTER_API_KEY;
+  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
+
+  const COMPANIES = [
+    // Denmark
+    { name: "BESTSELLER",        domain: "bestseller.com" },
+    { name: "Ganni",             domain: "ganni.com" },
+    { name: "Samsoe Samsoe",     domain: "samsoe.com" },
+    { name: "Les Deux",          domain: "lesdeux.com" },
+    { name: "Gestuz",            domain: "gestuz.com" },
+    { name: "Selected",          domain: "selected.com" },
+    { name: "Jack Jones",        domain: "jackjones.com" },
+    { name: "Vero Moda",         domain: "veromoda.com" },
+    { name: "Only",              domain: "only.com" },
+    { name: "Name It",           domain: "nameit.com" },
+    { name: "Bruuns Bazaar",     domain: "bruunsbazaar.com" },
+    { name: "Stine Goya",        domain: "stinegoya.com" },
+    { name: "By Malene Birger",  domain: "bymalenebirger.com" },
+    { name: "Rotate Birger",     domain: "rotatebirger.com" },
+    { name: "Norse Projects",    domain: "norseprojects.com" },
+    { name: "Wood Wood",         domain: "woodwood.com" },
+    { name: "Soulland",          domain: "soulland.com" },
+    { name: "Inwear",            domain: "inwear.com" },
+    { name: "Part Two",          domain: "parttwo.com" },
+    { name: "Fransa",            domain: "fransa.com" },
+    { name: "Kaffe Fashion",     domain: "kaffefashion.com" },
+    { name: "Cream Fashion",     domain: "creamfashion.com" },
+    { name: "Ichi",              domain: "ichicph.com" },
+    { name: "Noa Noa",           domain: "noa-noa.com" },
+    { name: "Saint Tropez",      domain: "sainttropez.com" },
+    { name: "Soaked in Luxury",  domain: "soakedinluxury.com" },
+    { name: "Zizzi",             domain: "zizzi.dk" },
+    { name: "Han Kjobenhavn",    domain: "hankjobenhavn.com" },
+    { name: "Holzweiler",        domain: "holzweiler.com" },
+    { name: "Tiger of Sweden",   domain: "tigerofsweden.com" },
+    { name: "Filippa K",         domain: "filippa-k.com" },
+    { name: "Mads Norgaard",     domain: "madsnorgaard.com" },
+    { name: "Day Birger",        domain: "day.dk" },
+    { name: "Remain Birger",     domain: "remaincph.com" },
+    { name: "Mamalicious",       domain: "mamalicious.com" },
+    { name: "Vila Clothes",      domain: "vila.com" },
+    { name: "Noisy May",         domain: "noisymay.com" },
+    { name: "Pieces",            domain: "pieces.com" },
+    { name: "Object",            domain: "object.dk" },
+    { name: "b.young",           domain: "byoung.dk" },
+    // Germany
+    { name: "Hugo Boss",         domain: "hugoboss.com" },
+    { name: "Zalando",           domain: "zalando.com" },
+    { name: "s.Oliver",          domain: "soliver.com" },
+    { name: "Tom Tailor",        domain: "tom-tailor.com" },
+    { name: "Marc O Polo",       domain: "marc-o-polo.com" },
+    { name: "Armedangels",       domain: "armedangels.com" },
+    { name: "About You",         domain: "aboutyou.com" },
+    { name: "Gerry Weber",       domain: "gerryweber.com" },
+    { name: "Brax",              domain: "brax.com" },
+    { name: "Street One",        domain: "street-one.de" },
+  ];
+
+  const results = [];
+  let totalPeople = 0;
+
+  for (const company of COMPANIES) {
+    try {
+      // Domain search — gets all people, NO email verification = NO credits used
+      const params = new URLSearchParams({
+        api_key: HUNTER_KEY,
+        domain:  company.domain,
+        limit:   10,
+      });
+
+      const r    = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
+      const data = await r.json();
+      const people = data.data?.emails || [];
+
+      const contacts = people.map(p => ({
+        name:       `${p.first_name || ""} ${p.last_name || ""}`.trim(),
+        title:      p.position   || "—",
+        email:      p.value      || "—",
+        linkedin:   p.linkedin   || null,
+        confidence: p.confidence || null
+      }));
+
+      totalPeople += contacts.length;
+
+      results.push({
+        company:      company.name,
+        domain:       company.domain,
+        total_people: data.meta?.results || 0,
+        contacts
+      });
+
+      await new Promise(r => setTimeout(r, 500));
+    } catch(e) {
+      results.push({ company: company.name, domain: company.domain, error: e.message });
+    }
+  }
+
+  res.json({
+    message:          "Hunter Domain Search — 50 companies — NO credits used",
+    companies_tested: COMPANIES.length,
+    total_people:     totalPeople,
+    results
+  });
+});
