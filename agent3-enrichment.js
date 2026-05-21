@@ -1,8 +1,8 @@
-// agent3-enrichment.js — v5.0 HUNTER.IO
-// Flow:
-//   1. Hunter Discover API → find Danish fashion companies (FREE)
-//   2. Hunter Domain Search API → find emails at each company
-//   3. Save companies + contacts to Supabase
+// agent3-enrichment.js — v7.0
+// Step 1: Hunter Company Enrichment (FREE - 0 credits)
+//         domain → company name, industry, size, country
+// Step 2: Save companies to Supabase
+// Step 3: Emails revealed manually from CRM (1 credit each)
 
 const { createClient } = require("@supabase/supabase-js");
 
@@ -10,249 +10,219 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const HUNTER_API_KEY = process.env.HUNTER_API_KEY;
 const HUNTER_BASE = "https://api.hunter.io/v2";
 
-// ─── HARDCODED FILTERS ────────────────────────────────────────────────────────
+// ─── COMPANY DATABASE BY COUNTRY ─────────────────────────────────────────────
 
-const COUNTRY_CODES = {
-  denmark:          "DK",
-  germany:          "DE",
-  uk:               "GB",
-  "united kingdom": "GB",
-  sweden:           "SE",
-  france:           "FR",
-  netherlands:      "NL",
-  norway:           "NO",
-  spain:            "ES",
-  italy:            "IT",
-  belgium:          "BE",
-  switzerland:      "CH",
+const COMPANIES = {
+  denmark: [
+    { name: "BESTSELLER",        domain: "bestseller.com" },
+    { name: "Ganni",             domain: "ganni.com" },
+    { name: "Samsoe Samsoe",     domain: "samsoe.com" },
+    { name: "Les Deux",          domain: "lesdeux.com" },
+    { name: "Gestuz",            domain: "gestuz.com" },
+    { name: "Selected",          domain: "selected.com" },
+    { name: "Jack Jones",        domain: "jackjones.com" },
+    { name: "Vero Moda",         domain: "veromoda.com" },
+    { name: "Only",              domain: "only.com" },
+    { name: "Name It",           domain: "nameit.com" },
+    { name: "Vila Clothes",      domain: "vila.com" },
+    { name: "Bruuns Bazaar",     domain: "bruunsbazaar.com" },
+    { name: "Stine Goya",        domain: "stinegoya.com" },
+    { name: "By Malene Birger",  domain: "bymalenebirger.com" },
+    { name: "Mads Norgaard",     domain: "madsnorgaard.com" },
+    { name: "Rotate Birger",     domain: "rotatebirger.com" },
+    { name: "Norse Projects",    domain: "norseprojects.com" },
+    { name: "Wood Wood",         domain: "woodwood.com" },
+    { name: "Soulland",          domain: "soulland.com" },
+    { name: "Inwear",            domain: "inwear.com" },
+    { name: "Part Two",          domain: "parttwo.com" },
+    { name: "Fransa",            domain: "fransa.com" },
+    { name: "Kaffe Fashion",     domain: "kaffefashion.com" },
+    { name: "Cream Fashion",     domain: "creamfashion.com" },
+    { name: "Ichi",              domain: "ichicph.com" },
+    { name: "Noa Noa",           domain: "noa-noa.com" },
+    { name: "Saint Tropez",      domain: "sainttropez.com" },
+    { name: "Soaked in Luxury",  domain: "soakedInluxury.com" },
+    { name: "Zizzi",             domain: "zizzi.dk" },
+    { name: "Han Kjobenhavn",    domain: "hankjobenhavn.com" },
+    { name: "Day Birger",        domain: "day.dk" },
+    { name: "Holzweiler",        domain: "holzweiler.com" },
+    { name: "Tiger of Sweden",   domain: "tigerofsweden.com" },
+    { name: "Filippa K",         domain: "filippa-k.com" },
+    { name: "b.young",           domain: "byoung.dk" },
+    { name: "Noisy May",         domain: "noisymay.com" },
+    { name: "Object",            domain: "object.dk" },
+    { name: "Pieces",            domain: "pieces.com" },
+    { name: "Remain Birger",     domain: "remaincph.com" },
+    { name: "Stine Goya",        domain: "stinegoya.com" },
+  ],
+
+  germany: [
+    { name: "Hugo Boss",         domain: "hugoboss.com" },
+    { name: "Zalando",           domain: "zalando.com" },
+    { name: "Esprit",            domain: "esprit.com" },
+    { name: "s.Oliver",          domain: "soliver.com" },
+    { name: "Tom Tailor",        domain: "tom-tailor.com" },
+    { name: "Bogner",            domain: "bogner.com" },
+    { name: "Marc O Polo",       domain: "marc-o-polo.com" },
+    { name: "Closed",            domain: "closed.com" },
+    { name: "Armedangels",       domain: "armedangels.com" },
+    { name: "About You",         domain: "aboutyou.com" },
+  ],
+
+  sweden: [
+    { name: "H&M",               domain: "hm.com" },
+    { name: "Acne Studios",      domain: "acnestudios.com" },
+    { name: "Weekday",           domain: "weekday.com" },
+    { name: "Monki",             domain: "monki.com" },
+    { name: "Arket",             domain: "arket.com" },
+    { name: "Lindex",            domain: "lindex.com" },
+    { name: "Kappahl",           domain: "kappahl.com" },
+    { name: "Odd Molly",         domain: "oddmolly.com" },
+    { name: "Bjorn Borg",        domain: "bjornborg.com" },
+    { name: "Peak Performance",  domain: "peakperformance.com" },
+  ],
+
+  uk: [
+    { name: "ASOS",              domain: "asos.com" },
+    { name: "Marks Spencer",     domain: "marksandspencer.com" },
+    { name: "Next",              domain: "next.co.uk" },
+    { name: "Topshop",           domain: "topshop.com" },
+    { name: "River Island",      domain: "riverisland.com" },
+    { name: "Joules",            domain: "joules.com" },
+    { name: "Fat Face",          domain: "fatface.com" },
+    { name: "White Stuff",       domain: "whitestuff.com" },
+    { name: "Boden",             domain: "boden.co.uk" },
+    { name: "Crew Clothing",     domain: "crewclothing.co.uk" },
+  ],
+
+  france: [
+    { name: "Sandro",            domain: "sandro-paris.com" },
+    { name: "Maje",              domain: "maje.com" },
+    { name: "Isabel Marant",     domain: "isabelmarant.com" },
+    { name: "A.P.C",             domain: "apc.fr" },
+    { name: "Jacquemus",         domain: "jacquemus.com" },
+    { name: "Rouje",             domain: "rouje.com" },
+    { name: "Balzac Paris",      domain: "balzac-paris.com" },
+    { name: "Sessun",            domain: "sessun.com" },
+    { name: "Ines de la Fressange", domain: "inesdelafressange.fr" },
+    { name: "Ba&sh",             domain: "ba-sh.com" },
+  ],
+
+  netherlands: [
+    { name: "G-Star Raw",        domain: "g-star.com" },
+    { name: "Scotch Soda",       domain: "scotch-soda.com" },
+    { name: "Mexx",              domain: "mexx.com" },
+    { name: "America Today",     domain: "america-today.com" },
+    { name: "Coolcat",           domain: "coolcat.com" },
+    { name: "WE Fashion",        domain: "wefashion.com" },
+    { name: "Costes Fashion",    domain: "costesfashion.com" },
+    { name: "Fabienne Chapot",   domain: "fabiennechapot.com" },
+    { name: "Shoeby",            domain: "shoeby.nl" },
+    { name: "Vanilia",           domain: "vanilia.com" },
+  ]
 };
 
-// Hunter industry keywords for fashion/apparel
-const INDUSTRY_KEYWORDS = [
-  "apparel",
-  "fashion",
-  "clothing",
-  "textile",
-  "garment"
-];
+// ─── HUNTER COMPANY ENRICHMENT (FREE) ────────────────────────────────────────
 
-// Job titles we want to find at each company
-const TARGET_TITLES = [
-  "buyer",
-  "buying manager",
-  "head of buying",
-  "sourcing manager",
-  "head of sourcing",
-  "sourcing director",
-  "procurement manager",
-  "merchandise manager",
-  "import manager"
-];
-
-// ─── HUNTER DISCOVER — find companies ────────────────────────────────────────
-
-async function discoverCompanies(countryCode, keyword, page = 1) {
+async function enrichCompany(domain) {
   try {
     const params = new URLSearchParams({
       api_key: HUNTER_API_KEY,
-      limit: 100,
-      offset: (page - 1) * 100,
-      "location_country_included[]": countryCode,
-      q: keyword
+      domain: domain
     });
-
-    const res = await fetch(`${HUNTER_BASE}/discover/companies?${params}`);
+    const res = await fetch(`${HUNTER_BASE}/companies/find?${params}`);
     const data = await res.json();
-
-    if (data.errors) {
-      console.log(`  ⚠️  Discover error: ${JSON.stringify(data.errors)}`);
-      return { companies: [], total: 0 };
-    }
-
-    const companies = data.data?.companies || data.data || [];
-    const total = data.meta?.total || companies.length;
-    return { companies, total };
-  } catch(e) {
-    console.log(`  ❌ Discover fetch error: ${e.message}`);
-    return { companies: [], total: 0 };
-  }
-}
-
-// ─── HUNTER DOMAIN SEARCH — find emails at a company ─────────────────────────
-
-async function searchDomain(domain) {
-  try {
-    const params = new URLSearchParams({
-      api_key: HUNTER_API_KEY,
-      domain: domain,
-      limit: 10,
-      type: "personal"
-    });
-
-    const res = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
-    const data = await res.json();
-
-    if (data.errors) return [];
-
-    const emails = data.data?.emails || [];
-    // Filter to only buying/sourcing people
-    return emails.filter(e => {
-      const title = (e.position || "").toLowerCase();
-      return TARGET_TITLES.some(t => title.includes(t.split(" ")[0]));
-    });
-  } catch(e) {
-    return [];
-  }
-}
-
-// ─── SAVE COMPANIES ──────────────────────────────────────────────────────────
-
-async function saveCompany(company, country) {
-  try {
-    const row = {
-      company_name: company.name || company.domain,
-      website: company.domain,
-      full_url: "https://" + company.domain,
-      category: company.industry || "Fashion",
-      industry: company.industry || null,
-      country: country,
-      company_size: company.headcount || null,
-      status: "discovered",
-      enriched: true,
-      created_at: new Date().toISOString()
-    };
-
-    const { data, error } = await supabase
-      .from("companies")
-      .upsert(row, { onConflict: "website", ignoreDuplicates: true })
-      .select("id")
-      .single();
-
-    if (error) return null;
-    return data?.id || null;
+    if (data.errors) return null;
+    return data.data || null;
   } catch(e) {
     return null;
   }
 }
 
-// ─── SAVE CONTACTS ────────────────────────────────────────────────────────────
+// ─── SAVE COMPANY TO SUPABASE ─────────────────────────────────────────────────
 
-async function saveContacts(emails, companyName, domain, companyId, country) {
-  if (!emails.length) return 0;
-  let saved = 0;
+async function saveCompany(company, enriched, country) {
+  try {
+    const row = {
+      company_name:  enriched?.name        || company.name,
+      website:       company.domain,
+      full_url:      "https://" + company.domain,
+      category:      enriched?.industry    || "Fashion",
+      industry:      enriched?.industry    || null,
+      country:       country,
+      company_size:  enriched?.size        || null,
+      status:        "discovered",
+      enriched:      true,
+      created_at:    new Date().toISOString()
+    };
 
-  for (const e of emails) {
-    try {
-      const row = {
-        company_name: companyName,
-        company_website: domain,
-        contact_name: `${e.first_name || ""} ${e.last_name || ""}`.trim(),
-        first_name: e.first_name || null,
-        last_name: e.last_name || null,
-        job_title: e.position || null,
-        email_1: e.value || null,
-        email_revealed: !!e.value,
-        linkedin_url: e.linkedin || null,
-        country: country,
-        source: "hunter_domain_search",
-        status: "new",
-        created_at: new Date().toISOString()
-      };
+    const { error } = await supabase
+      .from("companies")
+      .upsert(row, { onConflict: "website", ignoreDuplicates: true });
 
-      if (row.email_1) {
-        await supabase.from("contacts").upsert(row, { onConflict: "email_1", ignoreDuplicates: true });
-      } else if (row.linkedin_url) {
-        await supabase.from("contacts").upsert(row, { onConflict: "linkedin_url", ignoreDuplicates: true });
-      } else {
-        await supabase.from("contacts").insert(row);
-      }
-      saved++;
-    } catch(e) {
-      // skip
+    if (error) {
+      console.log(`  ⚠️  Save error for ${company.domain}: ${error.message}`);
+      return false;
     }
+    return true;
+  } catch(e) {
+    return false;
   }
-  return saved;
 }
 
-// ─── MAIN ────────────────────────────────────────────────────────────────────
+// ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 async function runAgent3() {
   console.log("============================================");
-  console.log("AGENT 3 v5.0 — Hunter.io Lead Finder");
-  console.log("Discover companies → Find emails → Save CRM");
+  console.log("AGENT 3 v7.0 — Hunter Company Loader");
+  console.log("FREE mode — no credits used");
+  console.log("Emails revealed per-contact from CRM");
   console.log("============================================\n");
 
   if (!HUNTER_API_KEY) { console.error("HUNTER_API_KEY not set!"); process.exit(1); }
 
-  const country = process.argv[2] || "Denmark";
-  const countryCode = COUNTRY_CODES[country.toLowerCase()] || "DK";
+  const country = (process.argv[2] || "denmark").toLowerCase();
+  const companies = COMPANIES[country];
 
-  console.log(`Country: ${country} (${countryCode})`);
-  console.log(`Keywords: ${INDUSTRY_KEYWORDS.join(", ")}\n`);
-
-  let allCompanies = [];
-
-  // Step 1: Discover companies for each keyword
-  console.log("STEP 1: Discovering fashion companies...");
-  for (const keyword of INDUSTRY_KEYWORDS) {
-    console.log(`\n  🔍 Keyword: "${keyword}"`);
-    const { companies, total } = await discoverCompanies(countryCode, keyword, 1);
-    console.log(`  Found: ${total} total, got ${companies.length}`);
-
-    if (companies.length > 0) {
-      companies.slice(0, 2).forEach(c =>
-        console.log(`    → ${c.name || c.domain} | ${c.domain} | ${c.industry || "—"}`)
-      );
-      allCompanies.push(...companies);
-    }
-    await sleep(1000);
+  if (!companies) {
+    console.error(`No companies for country: ${country}`);
+    console.log("Available: " + Object.keys(COMPANIES).join(", "));
+    process.exit(1);
   }
 
-  // Deduplicate by domain
-  const seen = new Set();
-  allCompanies = allCompanies.filter(c => {
-    if (!c.domain || seen.has(c.domain)) return false;
-    seen.add(c.domain);
-    return true;
-  });
-  console.log(`\n✅ Total unique companies: ${allCompanies.length}`);
+  console.log(`Country: ${country}`);
+  console.log(`Companies to process: ${companies.length}`);
+  console.log(`Credits used: 0 (enrichment is free)\n`);
 
-  // Step 2: For each company, save + find emails
-  console.log("\nSTEP 2: Finding buyer emails at each company...");
-  let totalCompanies = 0;
-  let totalContacts = 0;
+  let saved = 0;
+  let failed = 0;
 
-  for (let i = 0; i < allCompanies.length; i++) {
-    const company = allCompanies[i];
-    if (!company.domain) continue;
+  for (let i = 0; i < companies.length; i++) {
+    const company = companies[i];
+    process.stdout.write(`[${i+1}/${companies.length}] ${company.name}... `);
 
-    process.stdout.write(`  [${i+1}/${allCompanies.length}] ${company.name || company.domain}... `);
+    // Get free company data from Hunter
+    const enriched = await enrichCompany(company.domain);
 
-    // Save company
-    const companyId = await saveCompany(company, country);
-    if (companyId) totalCompanies++;
-
-    // Find emails (uses credits — only for first 10 companies to be safe)
-    if (i < 10) {
-      const emails = await searchDomain(company.domain);
-      if (emails.length > 0) {
-        const saved = await saveContacts(emails, company.name || company.domain, company.domain, companyId, country);
-        totalContacts += saved;
-        console.log(`✅ ${emails.length} buyers found`);
-      } else {
-        console.log(`(no buyers found)`);
-      }
-      await sleep(1200); // respect rate limit
+    if (enriched) {
+      console.log(`✅ ${enriched.industry || "Fashion"} | ${enriched.size || "?"} employees`);
     } else {
-      console.log(`(saved, email search skipped to save credits)`);
+      console.log(`(no enrichment data, saving with defaults)`);
     }
+
+    const ok = await saveCompany(company, enriched, country);
+    if (ok) saved++;
+    else failed++;
+
+    await sleep(500); // small delay
   }
 
   console.log("\n============================================");
   console.log("DONE!");
-  console.log(`Companies saved: ${totalCompanies}`);
-  console.log(`Contacts with emails: ${totalContacts}`);
-  console.log(`Remaining companies: reveal emails from CRM`);
+  console.log(`Companies saved: ${saved}`);
+  console.log(`Failed: ${failed}`);
+  console.log(`Credits used: 0`);
+  console.log(`Next step: Open CRM → click any company → reveal buyer emails`);
   console.log("============================================\n");
 }
 
