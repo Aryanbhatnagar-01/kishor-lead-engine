@@ -286,69 +286,70 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log("Kishor Lead Engine v5.0 running on port " + PORT));
 
-// ── TEST HUNTER ───────────────────────────────────────────────────────────────
-app.get("/test-hunter", async (req, res) => {
+// ── TEST COMPANIES ─────────────────────────────────────────────────────────────
+app.get("/test-companies", async (req, res) => {
   const HUNTER_KEY = process.env.HUNTER_API_KEY;
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set in environment" });
+  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
 
-  const results = {};
+  const TEST_COMPANIES = [
+    { name: "BESTSELLER",    domain: "bestseller.com" },
+    { name: "Ganni",         domain: "ganni.com" },
+    { name: "Samsoe Samsoe", domain: "samsoe.com" },
+    { name: "Les Deux",      domain: "lesdeux.com" },
+    { name: "Gestuz",        domain: "gestuz.com" },
+  ];
 
-  // Test 1: Account info + credits
-  try {
-    const r = await fetch(`https://api.hunter.io/v2/account?api_key=${HUNTER_KEY}`);
-    const data = await r.json();
-    results.account = {
-      email: data.data?.email,
-      plan: data.data?.plan_name,
-      searches_left: data.data?.requests?.searches?.available,
-      verifications_left: data.data?.requests?.verifications?.available
-    };
-  } catch(e) { results.account = { error: e.message }; }
+  const TARGET_TITLES = [
+    "buyer", "buying", "sourcing", "procurement",
+    "purchasing", "merchandise", "import", "supply", "director", "head"
+  ];
 
-  // Test 2: Discover Danish fashion companies
-  try {
-    const params = new URLSearchParams({
-      api_key: HUNTER_KEY,
-      limit: 10,
-      "location_country_included[]": "DK",
-      q: "fashion"
-    });
-    const r = await fetch(`https://api.hunter.io/v2/discover/companies?${params}`);
-    const data = await r.json();
-    const companies = data.data?.companies || [];
-    results.discover_test = {
-      total: data.meta?.total || 0,
-      sample: companies.slice(0, 5).map(c => ({
-        name: c.name,
-        domain: c.domain,
-        industry: c.industry,
-        headcount: c.headcount
-      })),
-      error: data.errors || null
-    };
-  } catch(e) { results.discover_test = { error: e.message }; }
+  const results = [];
 
-  // Test 3: Domain search on a known Danish fashion brand
-  try {
-    const params = new URLSearchParams({
-      api_key: HUNTER_KEY,
-      domain: "bestseller.com",
-      limit: 5
-    });
-    const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
-    const data = await r.json();
-    const emails = data.data?.emails || [];
-    results.domain_search_test = {
-      company: data.data?.organization,
-      total_emails: data.meta?.results || 0,
-      sample: emails.slice(0, 3).map(e => ({
-        name: `${e.first_name} ${e.last_name}`,
-        position: e.position,
-        email: e.value
-      })),
-      error: data.errors || null
-    };
-  } catch(e) { results.domain_search_test = { error: e.message }; }
+  for (const company of TEST_COMPANIES) {
+    try {
+      const params = new URLSearchParams({
+        api_key: HUNTER_KEY,
+        domain: company.domain,
+        limit: 10,
+        type: "personal"
+      });
 
-  res.json(results);
+      const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
+      const data = await r.json();
+      const allEmails = data.data?.emails || [];
+
+      // Filter to buying/sourcing people only
+      const buyers = allEmails.filter(e => {
+        const title = (e.position || "").toLowerCase();
+        return TARGET_TITLES.some(t => title.includes(t));
+      });
+
+      results.push({
+        company: company.name,
+        domain: company.domain,
+        total_people_at_company: data.meta?.results || 0,
+        buyers_found: buyers.length,
+        buyers: buyers.map(e => ({
+          name: `${e.first_name || ""} ${e.last_name || ""}`.trim(),
+          title: e.position || "—",
+          email: e.value || "—",
+          linkedin: e.linkedin || null,
+          confidence: e.confidence || null
+        }))
+      });
+
+      // small delay between calls
+      await new Promise(r => setTimeout(r, 800));
+
+    } catch(e) {
+      results.push({ company: company.name, domain: company.domain, error: e.message });
+    }
+  }
+
+  res.json({
+    test: "Hunter Domain Search — 5 Danish Fashion Companies",
+    total_companies_tested: TEST_COMPANIES.length,
+    results
+  });
 });
