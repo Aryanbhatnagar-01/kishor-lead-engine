@@ -10,6 +10,8 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const SALESHANDY_API_KEY = process.env.SALESHANDY_API_KEY;
 const SALESHANDY_BASE = "https://open-api.saleshandy.com/v1";
+const HUNTER_KEY = process.env.HUNTER_API_KEY;
+const HUNTER_BASE = "https://api.hunter.io/v2";
 
 let currentProcess = null;
 let isRunning = false;
@@ -39,7 +41,7 @@ app.post("/search", async (req, res) => {
 
   isRunning = true;
   progress = { step: "Starting", pct: 5, log: [] };
-  addLog("Starting Saleshandy search for " + country + "...");
+  addLog("Starting search for " + country + "...");
   res.json({ message: "Search started", country });
 
   progress.step = "Agent 3";
@@ -112,9 +114,9 @@ app.get("/contacts", async (req, res) => {
   res.json(data);
 });
 
-// ── REVEAL EMAIL — uses 1 credit ──────────────────────────────────────────────
+// ── REVEAL EMAIL — Hunter domain search (1 credit) ────────────────────────────
 app.post("/contacts/:id/reveal-email", async (req, res) => {
-  if (!SALESHANDY_API_KEY) return res.status(500).json({ error: "SALESHANDY_API_KEY not set" });
+  if (!HUNTER_KEY) return res.status(500).json({ error: "HUNTER_API_KEY not set" });
 
   const { data: contact, error: fetchError } = await supabase
     .from("contacts").select("*").eq("id", req.params.id).single();
@@ -125,54 +127,20 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
   }
 
   try {
-    // Build request body — use best available identifier
-    let requestBody = {};
-    if (contact.linkedin_url) {
-      requestBody = { linkedin_url: [contact.linkedin_url] };
-    } else if (contact.saleshandy_lead_id) {
-      requestBody = { lead_id: [parseInt(contact.saleshandy_lead_id)] };
-    } else if (contact.first_name && contact.company_website) {
-      requestBody = {
-        full_name_with_company: [{
-          first_name: contact.first_name,
-          last_name: contact.last_name || "",
-          company_domain: contact.company_website
-        }]
-      };
-    } else {
-      return res.status(400).json({ error: "Not enough data to reveal email" });
+    if (!contact.company_website) {
+      return res.status(400).json({ error: "No company domain to search" });
     }
 
-    // Start enrichment job
-    const enrichRes = await fetch(SALESHANDY_BASE + "/enrich/contact", {
-      method: "POST",
-      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody)
+    const params = new URLSearchParams({
+      api_key: HUNTER_KEY,
+      domain: contact.company_website,
+      first_name: contact.first_name || "",
+      last_name: contact.last_name || "",
     });
-    const enrichData = await enrichRes.json();
-    const requestId = enrichData.payload?.requestId;
-    if (!requestId) return res.status(500).json({ error: "No requestId", detail: enrichData });
 
-    // Poll for results
-    let email = null;
-    for (let i = 0; i < 10; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      const statusRes = await fetch(SALESHANDY_BASE + "/enrich/status/" + requestId, {
-        headers: { "x-api-key": SALESHANDY_API_KEY }
-      });
-      const statusData = await statusRes.json();
-      if (statusData.payload?.status === "completed" || statusData.payload?.status === "failed") {
-        const resultRes = await fetch(SALESHANDY_BASE + "/enrich/status/result/" + requestId, {
-          headers: { "x-api-key": SALESHANDY_API_KEY }
-        });
-        const resultData = await resultRes.json();
-        const results = resultData.payload?.results || [];
-        if (results.length > 0) {
-          email = results[0].email || results[0].work_email || null;
-        }
-        break;
-      }
-    }
+    const r = await fetch(`${HUNTER_BASE}/email-finder?${params}`);
+    const data = await r.json();
+    const email = data.data?.email || null;
 
     if (email) {
       await supabase.from("contacts").update({
@@ -180,9 +148,9 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
         email_revealed: true,
         email_revealed_at: new Date().toISOString()
       }).eq("id", req.params.id);
-      res.json({ email, success: true });
+      res.json({ email, success: true, confidence: data.data?.score });
     } else {
-      res.json({ email: null, success: false, message: "Email not found in database" });
+      res.json({ email: null, success: false, message: "Email not found" });
     }
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -191,104 +159,74 @@ app.post("/contacts/:id/reveal-email", async (req, res) => {
 
 // ── CREDITS ───────────────────────────────────────────────────────────────────
 app.get("/credits", async (req, res) => {
-  if (!SALESHANDY_API_KEY) return res.status(500).json({ error: "No API key" });
+  if (!HUNTER_KEY) return res.status(500).json({ error: "No HUNTER_API_KEY" });
   try {
-    const r = await fetch(SALESHANDY_BASE + "/credits", {
-      headers: { "x-api-key": SALESHANDY_API_KEY }
-    });
+    const r = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
     const data = await r.json();
-    res.json(data.payload);
+    res.json({
+      searches_left: data.data?.requests?.searches?.available,
+      verifications_left: data.data?.requests?.verifications?.available,
+      plan: data.data?.plan_name
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── TEST SALESHANDY ───────────────────────────────────────────────────────────
-app.get("/test-saleshandy", async (req, res) => {
-  if (!SALESHANDY_API_KEY) return res.json({ error: "No API key" });
+// ── TEST HUNTER ───────────────────────────────────────────────────────────────
+app.get("/test-hunter", async (req, res) => {
+  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
   const results = {};
 
-  // Credits
+  // Account info
   try {
-    const r = await fetch(SALESHANDY_BASE + "/credits", { headers: { "x-api-key": SALESHANDY_API_KEY } });
-    results.credits = await r.json();
-  } catch(e) { results.credits = { error: e.message }; }
-
-  // Company search — Denmark B2B Apparel
-  try {
-    const r = await fetch(SALESHANDY_BASE + "/search/companies", {
-      method: "POST",
-      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        company_hq_location: { includes: ["Denmark"] },
-        company_industry: { includes: ["Retail Apparel and Fashion", "Apparel Manufacturing"] },
-        is_b2b: true,
-        page: 1
-      })
-    });
+    const r = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
     const data = await r.json();
-    const comps = data.payload?.companies || data.payload?.results || [];
-    results.company_search = {
-      total: data.payload?.total || 0,
-      sample: comps.slice(0, 3).map(c => ({ name: c.name, domain: c.domain, industry: c.industry })),
-      error: data.error || null
+    results.account = {
+      plan: data.data?.plan_name,
+      searches_left: data.data?.requests?.searches?.available,
+      verifications_left: data.data?.requests?.verifications?.available
     };
-  } catch(e) { results.company_search = { error: e.message }; }
+  } catch(e) { results.account = { error: e.message }; }
 
-  // People search — Denmark buyers
+  // Test Discover API
   try {
-    const r = await fetch(SALESHANDY_BASE + "/search/people", {
-      method: "POST",
-      headers: { "x-api-key": SALESHANDY_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        job_title: { includes: ["Buying Manager", "Sourcing Director", "Head of Buying"] },
-        company_hq_location: { includes: ["Denmark"] },
-        company_industry: { includes: ["Retail Apparel and Fashion", "Apparel Manufacturing"] },
-        is_b2b: true,
-        page: 1
-      })
-    });
+    const url = `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included[]=DK&q=fashion&limit=5`;
+    const r = await fetch(url);
+    const text = await r.text();
+    if (text.startsWith("<")) {
+      results.discover = { error: "Returns HTML — Discover needs paid plan" };
+    } else {
+      const data = JSON.parse(text);
+      results.discover = {
+        total: data.meta?.total || 0,
+        companies: (data.data?.companies || []).slice(0, 3).map(c => ({
+          name: c.name, domain: c.domain, industry: c.industry
+        })),
+        errors: data.errors || null
+      };
+    }
+  } catch(e) { results.discover = { error: e.message }; }
+
+  // Test Domain Search (BESTSELLER)
+  try {
+    const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: "bestseller.com", limit: 5 });
+    const r = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
     const data = await r.json();
-    const leads = data.payload?.leads || data.payload?.results || [];
-    results.people_search = {
-      total: data.payload?.total || 0,
-      sample: leads.slice(0, 3).map(p => ({
-        name: (p.first_name || "") + " " + (p.last_name || ""),
-        title: p.job_title || p.title,
-        company: p.organization_name || p.company_name,
-        has_linkedin: !!p.linkedin_url
-      })),
-      error: data.error || null
+    results.domain_search = {
+      company: data.data?.organization,
+      total_emails: data.meta?.results || 0,
+      sample: (data.data?.emails || []).slice(0, 3).map(e => ({
+        name: `${e.first_name} ${e.last_name}`,
+        title: e.position,
+        email: e.value
+      }))
     };
-  } catch(e) { results.people_search = { error: e.message }; }
+  } catch(e) { results.domain_search = { error: e.message }; }
 
   res.json(results);
 });
 
-// ── ROOT ──────────────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.json({
-    status: "Kishor Lead Engine API running!",
-    version: "5.0",
-    description: "Saleshandy powered — real companies + real buyers!",
-    endpoints: {
-      "POST /search": "Search { country: 'Denmark' }",
-      "GET /status": "Check progress",
-      "POST /stop": "Stop search",
-      "GET /companies": "All companies",
-      "GET /contacts": "All contacts",
-      "POST /contacts/:id/reveal-email": "Reveal email (1 credit)",
-      "GET /credits": "Check credits",
-      "GET /test-saleshandy": "Test API",
-      "GET /stats": "Counts"
-    }
-  });
-});
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v5.0 running on port " + PORT));
-
-// ── TEST COMPANIES ─────────────────────────────────────────────────────────────
+// ── TEST COMPANIES (5 Danish brands) ─────────────────────────────────────────
 app.get("/test-companies", async (req, res) => {
-  const HUNTER_KEY = process.env.HUNTER_API_KEY;
   if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
 
   const TEST_COMPANIES = [
@@ -305,30 +243,20 @@ app.get("/test-companies", async (req, res) => {
   ];
 
   const results = [];
-
   for (const company of TEST_COMPANIES) {
     try {
-      const params = new URLSearchParams({
-        api_key: HUNTER_KEY,
-        domain: company.domain,
-        limit: 10,
-        type: "personal"
-      });
-
-      const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
+      const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: company.domain, limit: 10, type: "personal" });
+      const r = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
       const data = await r.json();
       const allEmails = data.data?.emails || [];
-
-      // Filter to buying/sourcing people only
       const buyers = allEmails.filter(e => {
         const title = (e.position || "").toLowerCase();
         return TARGET_TITLES.some(t => title.includes(t));
       });
-
       results.push({
         company: company.name,
         domain: company.domain,
-        total_people_at_company: data.meta?.results || 0,
+        total_people: data.meta?.results || 0,
         buyers_found: buyers.length,
         buyers: buyers.map(e => ({
           name: `${e.first_name || ""} ${e.last_name || ""}`.trim(),
@@ -338,18 +266,66 @@ app.get("/test-companies", async (req, res) => {
           confidence: e.confidence || null
         }))
       });
-
-      // small delay between calls
       await new Promise(r => setTimeout(r, 800));
-
     } catch(e) {
-      results.push({ company: company.name, domain: company.domain, error: e.message });
+      results.push({ company: company.name, error: e.message });
+    }
+  }
+  res.json({ test: "5 Danish Fashion Companies", results });
+});
+
+// ── TEST HUNTER SEARCH (Discover API test) ────────────────────────────────────
+app.get("/test-hunter-search", async (req, res) => {
+  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
+  const country = req.query.country || "DK";
+  const results = {};
+
+  // Try Discover API with correct parameter format
+  const formats = [
+    `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included[]=${country}&q=fashion&limit=5`,
+    `${HUNTER_BASE}/discover/companies?api_key=${HUNTER_KEY}&location_country_included%5B%5D=${country}&q=fashion&limit=5`,
+  ];
+
+  for (let i = 0; i < formats.length; i++) {
+    try {
+      const r = await fetch(formats[i]);
+      const text = await r.text();
+      if (text.startsWith("<")) {
+        results[`format_${i+1}`] = { error: "HTML response — needs paid plan" };
+      } else {
+        const data = JSON.parse(text);
+        results[`format_${i+1}`] = {
+          total: data.meta?.total || 0,
+          companies: (data.data?.companies || []).slice(0, 3),
+          errors: data.errors || null
+        };
+      }
+    } catch(e) {
+      results[`format_${i+1}`] = { error: e.message };
     }
   }
 
+  res.json(results);
+});
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+app.get("/", (req, res) => {
   res.json({
-    test: "Hunter Domain Search — 5 Danish Fashion Companies",
-    total_companies_tested: TEST_COMPANIES.length,
-    results
+    status: "Kishor Lead Engine v6.0 — Hunter Powered!",
+    endpoints: {
+      "POST /search": "Search by country",
+      "GET /status": "Check progress",
+      "GET /companies": "All companies",
+      "GET /contacts": "All contacts",
+      "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
+      "GET /credits": "Check Hunter credits",
+      "GET /test-hunter": "Test Hunter API",
+      "GET /test-companies": "Test 5 Danish companies",
+      "GET /test-hunter-search?country=DK": "Test Discover API",
+      "GET /stats": "DB counts"
+    }
   });
 });
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log("Kishor Lead Engine v6.0 running on port " + PORT));
