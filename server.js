@@ -285,3 +285,70 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log("Kishor Lead Engine v5.0 running on port " + PORT));
+
+// ── TEST HUNTER ───────────────────────────────────────────────────────────────
+app.get("/test-hunter", async (req, res) => {
+  const HUNTER_KEY = process.env.HUNTER_API_KEY;
+  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set in environment" });
+
+  const results = {};
+
+  // Test 1: Account info + credits
+  try {
+    const r = await fetch(`https://api.hunter.io/v2/account?api_key=${HUNTER_KEY}`);
+    const data = await r.json();
+    results.account = {
+      email: data.data?.email,
+      plan: data.data?.plan_name,
+      searches_left: data.data?.requests?.searches?.available,
+      verifications_left: data.data?.requests?.verifications?.available
+    };
+  } catch(e) { results.account = { error: e.message }; }
+
+  // Test 2: Discover Danish fashion companies
+  try {
+    const params = new URLSearchParams({
+      api_key: HUNTER_KEY,
+      limit: 10,
+      "location_country_included[]": "DK",
+      q: "fashion"
+    });
+    const r = await fetch(`https://api.hunter.io/v2/discover/companies?${params}`);
+    const data = await r.json();
+    const companies = data.data?.companies || [];
+    results.discover_test = {
+      total: data.meta?.total || 0,
+      sample: companies.slice(0, 5).map(c => ({
+        name: c.name,
+        domain: c.domain,
+        industry: c.industry,
+        headcount: c.headcount
+      })),
+      error: data.errors || null
+    };
+  } catch(e) { results.discover_test = { error: e.message }; }
+
+  // Test 3: Domain search on a known Danish fashion brand
+  try {
+    const params = new URLSearchParams({
+      api_key: HUNTER_KEY,
+      domain: "bestseller.com",
+      limit: 5
+    });
+    const r = await fetch(`https://api.hunter.io/v2/domain-search?${params}`);
+    const data = await r.json();
+    const emails = data.data?.emails || [];
+    results.domain_search_test = {
+      company: data.data?.organization,
+      total_emails: data.meta?.results || 0,
+      sample: emails.slice(0, 3).map(e => ({
+        name: `${e.first_name} ${e.last_name}`,
+        position: e.position,
+        email: e.value
+      })),
+      error: data.errors || null
+    };
+  } catch(e) { results.domain_search_test = { error: e.message }; }
+
+  res.json(results);
+});
