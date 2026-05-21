@@ -1,72 +1,41 @@
+// agent3-enrichment.js — v3.0 FIXED
+// Changes from v2:
+//   - REMOVED Gemini dependency (was causing 429 rate limit crashes)
+//   - HARDCODED correct Saleshandy industry names
+//   - Same endpoints, same save logic — just no AI in the middle
+
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const SALESHANDY_API_KEY = process.env.SALESHANDY_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const API_BASE = "https://open-api.saleshandy.com/v1";
 
-const KISHOR_PROMPT = `
-You are a B2B lead generation expert for KISHOR EXPORTS, Agra India.
+// ─── HARDCODED CORRECT FILTERS ───────────────────────────────────────────────
+// These are the EXACT industry names Saleshandy recognises
+const INDUSTRIES = [
+  "Retail Apparel and Fashion",
+  "Apparel Manufacturing",
+  "Textile Manufacturing",
+  "Wholesale Apparel and Sewing Supplies"
+];
 
-ABOUT KISHOR EXPORTS:
-- Factory: 600,000+ garments/month, 3,200+ workers
-- Certifications: GOTS, FAIR TRADE, OEKO-TEX, OCS, SEDEX SMETA
-- Clients: NEXT UK, OVS Italy, Carol France, Debenhams
-- Target: Mid-market to affordable premium fashion brands globally
+const JOB_TITLES = [
+  "Buying Manager",
+  "Head of Buying",
+  "Buying Director",
+  "Senior Buyer",
+  "Buyer",
+  "Sourcing Director",
+  "Sourcing Manager",
+  "Head of Sourcing",
+  "Procurement Manager",
+  "Category Buyer",
+  "Import Manager",
+  "Merchandise Manager",
+  "Product Director"
+];
 
-PRODUCTS WE MAKE:
-Babywear: Baby Rompers, Onesies, Dresses, Sleepwear, Swaddles, Blankets
-Kidswear: Girls Tops, Boys Shirts, Kids Sweatpants, Joggers, Jackets
-Womenswear: Maxi/Midi Dresses, Boho Tops, Blouses, Wide Leg Pants, Skirts, Knitwear
-Menswear: Linen Shirts, Oxford Shirts, Hoodies, Sweatshirts, Jeans, Cargo Pants
-Home Textiles: Bed Linen, Duvet Covers, Pillow Covers, Tea Towels, Bathrobes
-
-IDEAL BUYERS:
-- Fashion brands and retailers sourcing from India/Asia
-- B2B companies only, Revenue 2M EUR minimum
-- NOT luxury brands, NOT ultra-fast-fashion
-
-JOB TITLES TO TARGET:
-Buying Manager, Head of Buying, Buying Director, Sourcing Director,
-Sourcing Manager, Head of Sourcing, Procurement Manager, Category Buyer,
-Senior Buyer, Buyer, Import Manager, Merchandise Manager, Product Director
-
-VALID SALESHANDY INDUSTRY NAMES (use ONLY these):
-- "Retail Apparel and Fashion"
-- "Apparel Manufacturing"
-- "Textile Manufacturing"
-- "Wholesale Apparel and Sewing Supplies"
-- "Luxury Goods and Jewelry"
-- "Consumer Goods"
-- "Retail"
-- "Home Furnishings"
-
-Given a country name, return the BEST search filters as JSON.
-Return ONLY valid JSON, no markdown, no explanation:
-{
-  "country": "exact country name",
-  "industries": ["industry1", "industry2", "industry3"],
-  "job_titles": ["title1", "title2", "title3"],
-  "search_reason": "brief reason"
-}
-`;
-
-async function callGemini(userInput) {
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: KISHOR_PROMPT + "\n\nUser input: " + userInput + "\n\nReturn JSON:" }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 500 }
-    })
-  });
-  if (!res.ok) throw new Error("Gemini error: " + res.status);
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  const clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  return JSON.parse(clean);
-}
+// ─── SALESHANDY CALL ─────────────────────────────────────────────────────────
 
 async function saleshandy(endpoint, body) {
   const res = await fetch(API_BASE + endpoint, {
@@ -76,40 +45,56 @@ async function saleshandy(endpoint, body) {
   });
   const text = await res.text();
   try { return JSON.parse(text); }
-  catch(e) { throw new Error("Saleshandy: " + text.substring(0, 200)); }
+  catch(e) { throw new Error("Saleshandy response: " + text.substring(0, 300)); }
 }
 
-async function searchCompanies(country, industries, page) {
+// ─── SEARCH COMPANIES ────────────────────────────────────────────────────────
+
+async function searchCompanies(country, page) {
   try {
     const data = await saleshandy("/search/companies", {
       company_hq_location: { includes: [country] },
-      company_industry: { includes: industries },
+      company_industry: { includes: INDUSTRIES },
       is_b2b: true,
       page: page || 1
     });
-    return data.payload?.companies || data.payload?.results || [];
-  } catch(e) { console.log("Company search error: " + e.message); return []; }
+    console.log("  Company response keys:", Object.keys(data.payload || {}));
+    return data.payload?.companies || data.payload?.results || data.payload?.data || [];
+  } catch(e) {
+    console.log("  Company search error: " + e.message);
+    return [];
+  }
 }
 
-async function searchPeople(country, industries, jobTitles, page) {
+// ─── SEARCH PEOPLE ───────────────────────────────────────────────────────────
+
+async function searchPeople(country, page) {
   try {
     const data = await saleshandy("/search/people", {
-      job_title: { includes: jobTitles },
+      job_title: { includes: JOB_TITLES },
       company_hq_location: { includes: [country] },
-      company_industry: { includes: industries },
+      company_industry: { includes: INDUSTRIES },
       is_b2b: true,
       page: page || 1
     });
-    return { people: data.payload?.leads || data.payload?.results || [], total: data.payload?.total || 0 };
-  } catch(e) { console.log("People search error: " + e.message); return { people: [], total: 0 }; }
+    console.log("  People response keys:", Object.keys(data.payload || {}));
+    const people = data.payload?.leads || data.payload?.results || data.payload?.data || [];
+    const total  = data.payload?.total || data.payload?.totalRecords || people.length;
+    return { people, total };
+  } catch(e) {
+    console.log("  People search error: " + e.message);
+    return { people: [], total: 0 };
+  }
 }
+
+// ─── SAVE COMPANIES ──────────────────────────────────────────────────────────
 
 async function saveCompanies(companies, country) {
   if (!companies.length) return 0;
   const rows = companies.map(c => ({
-    company_name: c.name || "Unknown",
-    website: c.domain || c.primary_domain || null,
-    full_url: c.domain ? "https://" + c.domain : null,
+    company_name: c.name || c.company_name || "Unknown",
+    website: c.domain || c.primary_domain || c.website || null,
+    full_url: (c.domain || c.primary_domain) ? "https://" + (c.domain || c.primary_domain) : null,
     category: c.industry || "Fashion",
     industry: c.industry || null,
     country: country,
@@ -119,119 +104,114 @@ async function saveCompanies(companies, country) {
     enriched: true,
     created_at: new Date().toISOString()
   })).filter(c => c.website);
-  if (!rows.length) return 0;
+
+  if (!rows.length) { console.log("  (no companies with domains to save)"); return 0; }
   const { error } = await supabase.from("companies").upsert(rows, { onConflict: "website", ignoreDuplicates: true });
-  if (error) console.log("Save error: " + error.message);
+  if (error) console.log("  Save companies error: " + error.message);
   return rows.length;
 }
 
+// ─── SAVE PEOPLE ─────────────────────────────────────────────────────────────
+
 async function savePeople(people, country) {
   if (!people.length) return 0;
+
   const contacts = people.map(p => ({
-    company_name: p.organization_name || p.company_name || null,
+    company_name:    p.organization_name || p.company_name  || null,
     company_website: p.organization_domain || p.company_domain || null,
-    contact_name: ((p.first_name || "") + " " + (p.last_name || "")).trim(),
-    first_name: p.first_name || null,
-    last_name: p.last_name || null,
-    job_title: p.job_title || p.title || null,
-    department: p.department || null,
-    linkedin_url: p.linkedin_url || null,
+    contact_name:    ((p.first_name || "") + " " + (p.last_name || "")).trim(),
+    first_name:      p.first_name  || null,
+    last_name:       p.last_name   || null,
+    job_title:       p.job_title   || p.title || null,
+    department:      p.department  || null,
+    linkedin_url:    p.linkedin_url || null,
     saleshandy_lead_id: p.id ? String(p.id) : null,
-    email_1: null,
-    email_revealed: false,
-    country: country,
-    source: "saleshandy_ai_search",
-    status: "new",
-    created_at: new Date().toISOString()
+    email_1:         null,
+    email_revealed:  false,
+    country:         country,
+    source:          "saleshandy_search",
+    status:          "new",
+    created_at:      new Date().toISOString()
   })).filter(p => p.contact_name.trim() !== "");
 
-  const withLinkedin = contacts.filter(c => c.linkedin_url);
+  const withLinkedin    = contacts.filter(c =>  c.linkedin_url);
   const withoutLinkedin = contacts.filter(c => !c.linkedin_url);
   let saved = 0;
+
   if (withLinkedin.length > 0) {
     const { error } = await supabase.from("contacts").upsert(withLinkedin, { onConflict: "linkedin_url", ignoreDuplicates: true });
     if (!error) saved += withLinkedin.length;
+    else console.log("  Upsert (linkedin) error:", error.message);
   }
   if (withoutLinkedin.length > 0) {
     const { error } = await supabase.from("contacts").insert(withoutLinkedin);
     if (!error) saved += withoutLinkedin.length;
+    else console.log("  Insert error:", error.message);
   }
   return saved;
 }
 
+// ─── MAIN ────────────────────────────────────────────────────────────────────
+
 async function runAgent3() {
   console.log("============================================");
-  console.log("AGENT 3 — AI Powered Lead Finder v2");
-  console.log("User types country -> AI does everything!");
+  console.log("AGENT 3 v3.0 — Saleshandy Lead Finder");
+  console.log("No AI dependency. Hardcoded correct filters.");
   console.log("============================================\n");
 
   if (!SALESHANDY_API_KEY) { console.error("SALESHANDY_API_KEY not set!"); process.exit(1); }
-  if (!GEMINI_API_KEY) { console.error("GEMINI_API_KEY not set!"); process.exit(1); }
 
-  const userInput = process.argv[2] || "Denmark";
-  console.log("Searching for: " + userInput + "\n");
+  const country = process.argv[2] || "Denmark";
+  console.log("Country: " + country);
+  console.log("Industries: " + INDUSTRIES.join(", ") + "\n");
 
-  // AI generates perfect filters automatically
-  console.log("AI thinking...");
-  let filters;
-  try {
-    filters = await callGemini(userInput);
-    console.log("AI filters generated:");
-    console.log("  Country: " + filters.country);
-    console.log("  Industries: " + filters.industries.join(", "));
-    console.log("  Reason: " + filters.search_reason + "\n");
-  } catch(e) {
-    console.log("AI fallback to defaults: " + e.message);
-    filters = {
-      country: userInput,
-      industries: ["Retail Apparel and Fashion", "Apparel Manufacturing", "Textile Manufacturing"],
-      job_titles: ["Buying Manager", "Head of Buying", "Sourcing Director", "Sourcing Manager", "Senior Buyer", "Buyer"]
-    };
-  }
-
-  const { country, industries, job_titles } = filters;
   let totalCompanies = 0;
-  let totalPeople = 0;
+  let totalPeople    = 0;
 
-  // Search companies
-  console.log("Finding companies in " + country + "...");
-  const companies = await searchCompanies(country, industries, 1);
-  console.log("Found: " + companies.length + " companies");
-  if (companies.length > 0) {
-    companies.slice(0, 3).forEach(c => console.log("  -> " + c.name + " | " + c.industry));
-    totalCompanies += await saveCompanies(companies, country);
-    await new Promise(r => setTimeout(r, 1500));
-    const page2 = await searchCompanies(country, industries, 2);
-    if (page2.length > 0) totalCompanies += await saveCompanies(page2, country);
+  // ── Companies ─────────────────────────────────────────────────────────────
+  console.log("1. Searching companies in " + country + "...");
+  const companies1 = await searchCompanies(country, 1);
+  console.log("   Page 1: " + companies1.length + " companies");
+  if (companies1.length > 0) {
+    companies1.slice(0, 3).forEach(c => console.log("    -> " + (c.name || c.company_name) + " | " + (c.domain || c.primary_domain || "no domain")));
+    totalCompanies += await saveCompanies(companies1, country);
+    await sleep(1500);
+    const companies2 = await searchCompanies(country, 2);
+    console.log("   Page 2: " + companies2.length + " companies");
+    if (companies2.length > 0) totalCompanies += await saveCompanies(companies2, country);
   }
 
-  await new Promise(r => setTimeout(r, 2000));
+  await sleep(2000);
 
-  // Search people
-  console.log("\nFinding buyers in " + country + "...");
-  const { people, total } = await searchPeople(country, industries, job_titles, 1);
-  console.log("Found: " + total + " total buyers");
+  // ── People ────────────────────────────────────────────────────────────────
+  console.log("\n2. Searching buyers in " + country + "...");
+  const { people: page1, total } = await searchPeople(country, 1);
+  console.log("   Total in Saleshandy database: " + total);
+  console.log("   Page 1 returned: " + page1.length + " people");
 
-  if (people.length > 0) {
-    people.slice(0, 5).forEach(p => {
-      console.log("  -> " + (p.first_name||"") + " " + (p.last_name||"") + " | " + (p.job_title||"—") + " | " + (p.organization_name||"—"));
-    });
-    totalPeople += await savePeople(people, country);
+  if (page1.length > 0) {
+    page1.slice(0, 5).forEach(p =>
+      console.log("    -> " + (p.first_name||"") + " " + (p.last_name||"") + " | " + (p.job_title||"—") + " | " + (p.organization_name||p.company_name||"—"))
+    );
+    totalPeople += await savePeople(page1, country);
 
     const maxPages = Math.min(5, Math.ceil(total / 25));
     for (let page = 2; page <= maxPages; page++) {
-      await new Promise(r => setTimeout(r, 2000));
-      const { people: more } = await searchPeople(country, industries, job_titles, page);
+      await sleep(2000);
+      const { people: more } = await searchPeople(country, page);
+      console.log("   Page " + page + ": " + more.length + " people");
       if (more.length > 0) totalPeople += await savePeople(more, country);
     }
   }
 
   console.log("\n============================================");
-  console.log("Done!");
-  console.log("Companies: " + totalCompanies);
-  console.log("Buyers: " + totalPeople);
-  console.log("Cost: $0 (emails reveal from CRM)");
+  console.log("DONE!");
+  console.log("Companies saved: " + totalCompanies);
+  console.log("Buyers saved:    " + totalPeople);
+  console.log("Email reveal:    1 credit per contact (from CRM)");
   console.log("============================================\n");
 }
 
-runAgent3().catch(err => { console.error("Error: " + err.message); process.exit(1); });
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+runAgent3().catch(err => { console.error("Fatal: " + err.message); process.exit(1); });
