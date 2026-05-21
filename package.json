@@ -4,12 +4,13 @@
   "description": "Kishor Export Lead Generation Engine",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "npx playwright install chromium --with-deps"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "@supabase/supabase-js": "^2.39.0",
-    "puppeteer": "22.6.5"
+    "playwright": "^1.40.0"
   }
 }
