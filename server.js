@@ -233,24 +233,21 @@ app.get("/test-hunter", async (req, res) => {
   res.json(results);
 });
 
-// ── TEST 50 COMPANIES ─────────────────────────────────────────────────────────
+// ── TEST 5 COMPANIES ──────────────────────────────────────────────────────────
 app.get("/test-companies", async (req, res) => {
   if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
 
   const TEST_COMPANIES = [
-    { name: "BESTSELLER",       domain: "bestseller.com" },
-    { name: "Ganni",            domain: "ganni.com" },
-    { name: "Samsoe Samsoe",    domain: "samsoe.com" },
-    { name: "Les Deux",         domain: "lesdeux.com" },
-    { name: "Gestuz",           domain: "gestuz.com" },
+    { name: "BESTSELLER",    domain: "bestseller.com" },
+    { name: "Ganni",         domain: "ganni.com" },
+    { name: "Samsoe Samsoe", domain: "samsoe.com" },
+    { name: "Les Deux",      domain: "lesdeux.com" },
+    { name: "Gestuz",        domain: "gestuz.com" },
   ];
 
-  const TARGET_TITLES = [
-    "buyer", "buying", "sourcing", "procurement",
-    "purchasing", "merchandise", "import", "supply", "director", "head"
-  ];
-
+  const TARGET_TITLES = ["buyer","buying","sourcing","procurement","purchasing","merchandise","import","supply","director","head"];
   const results = [];
+
   for (const company of TEST_COMPANIES) {
     try {
       const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: company.domain, limit: 10, type: "personal" });
@@ -282,28 +279,103 @@ app.get("/test-companies", async (req, res) => {
   res.json({ test: "5 Danish Fashion Companies", results });
 });
 
+// ── SMTP EMAIL VERIFIER ───────────────────────────────────────────────────────
+app.post("/verify-email", async (req, res) => {
+  const { full_name, domain } = req.body;
+  if (!full_name || !domain) return res.status(400).json({ error: "full_name and domain required" });
+
+  const net = require('net');
+  const dns = require('dns').promises;
+
+  const parts = full_name.toLowerCase().replace(/[^a-z\s]/g, '').trim().split(/\s+/);
+  const first = parts[0] || '';
+  const last = parts[parts.length - 1] || '';
+  if (!first || !last) return res.json({ success: false, email: null, method: 'no_name' });
+
+  const guesses = [
+    `${first}.${last}@${domain}`,
+    `${first}@${domain}`,
+    `${first[0]}${last}@${domain}`,
+    `${first[0]}.${last}@${domain}`,
+    `${last}.${first}@${domain}`,
+    `${first}${last[0]}@${domain}`,
+  ];
+
+  async function smtpCheck(email) {
+    return new Promise(async (resolve) => {
+      try {
+        const emailDomain = email.split('@')[1];
+        const mxRecords = await dns.resolveMx(emailDomain).catch(() => null);
+        if (!mxRecords || !mxRecords.length) return resolve(false);
+        const mx = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
+
+        const socket = net.createConnection(25, mx);
+        let buffer = '';
+        let step = 0;
+        let resolved = false;
+
+        const done = (result) => {
+          if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
+        };
+
+        socket.setTimeout(8000);
+        socket.on('timeout', () => done(false));
+        socket.on('error', () => done(false));
+        socket.on('data', (chunk) => {
+          buffer += chunk.toString();
+          if (step === 0 && buffer.includes('220')) {
+            socket.write('EHLO kishorexports.com\r\n');
+            step = 1; buffer = '';
+          } else if (step === 1 && buffer.includes('250')) {
+            socket.write('MAIL FROM:<verify@kishorexports.com>\r\n');
+            step = 2; buffer = '';
+          } else if (step === 2 && buffer.includes('250')) {
+            socket.write(`RCPT TO:<${email}>\r\n`);
+            step = 3; buffer = '';
+          } else if (step === 3) {
+            const valid = buffer.includes('250') || buffer.includes('251');
+            socket.write('QUIT\r\n');
+            done(valid);
+          }
+        });
+      } catch(e) { resolve(false); }
+    });
+  }
+
+  try {
+    for (const email of guesses) {
+      const valid = await smtpCheck(email);
+      if (valid) return res.json({ success: true, email, method: 'smtp_verified' });
+    }
+    res.json({ success: false, email: guesses[0], method: 'best_guess' });
+  } catch(e) {
+    res.json({ success: false, email: guesses[0], method: 'error', error: e.message });
+  }
+});
+
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v7.0 — Hunter + Puppeteer Scraper!",
+    status: "Kishor Lead Engine v7.1 — SMTP Verifier Added!",
     endpoints: {
-      "POST /search":              "Search by country (uses Hunter API)",
-      "POST /scrape-hunter":       "Scrape Hunter UI — NO credits used!",
-      "GET /status":               "Check progress",
-      "POST /stop":                "Stop current job",
-      "GET /companies":            "All companies",
-      "GET /contacts":             "All contacts",
+      "POST /search":                    "Search by country (uses Hunter API)",
+      "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
+      "GET /status":                     "Check progress",
+      "POST /stop":                      "Stop current job",
+      "GET /companies":                  "All companies",
+      "GET /contacts":                   "All contacts",
       "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "GET /credits":              "Check Hunter credits",
-      "GET /test-hunter":          "Test Hunter API",
-      "GET /test-companies":       "Test 5 Danish companies",
-      "GET /stats":                "DB counts"
+      "POST /verify-email":              "SMTP verify email (free!)",
+      "GET /credits":                    "Check Hunter credits",
+      "GET /test-hunter":                "Test Hunter API",
+      "GET /test-companies":             "Test 5 Danish companies",
+      "GET /stats":                      "DB counts"
     }
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.0 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v7.1 running on port " + PORT));
 
 // ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
 app.post("/save-company", async (req, res) => {
