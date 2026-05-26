@@ -327,7 +327,7 @@ async function smtpCheck(email) {
       const done = (result) => {
         if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
       };
-      socket.setTimeout(8000);
+      socket.setTimeout(25000);
       socket.on('timeout', () => done(false));
       socket.on('error', () => done(false));
       socket.on('data', (chunk) => {
