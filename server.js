@@ -379,10 +379,16 @@ app.post("/verify-email", async (req, res) => {
   }
 });
 
+// ── CRM ───────────────────────────────────────────────────────────────────────
+const path = require('path');
+app.get('/crm', (req, res) => {
+  res.sendFile(path.join(__dirname, 'people-crm-v2.html'));
+});
+
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v7.2 — 9-Format SMTP Verifier",
+    status: "Kishor Lead Engine v7.3 — CRM Hosted + 9-Format SMTP Verifier",
     endpoints: {
       "POST /search":                    "Search by country (uses Hunter API)",
       "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
@@ -392,6 +398,7 @@ app.get("/", (req, res) => {
       "GET /contacts":                   "All contacts",
       "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
       "GET /verify-email?email=xxx":     "SMTP verify single email (free!)",
+      "GET /crm":                        "People CRM dashboard",
       "POST /verify-email":              "SMTP verify by name+domain (free!)",
       "GET /credits":                    "Check Hunter credits",
       "GET /test-hunter":                "Test Hunter API",
@@ -402,7 +409,7 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.2 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v7.3 running on port " + PORT));
 
 // ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
 app.post("/save-company", async (req, res) => {
