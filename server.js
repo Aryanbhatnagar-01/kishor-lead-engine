@@ -279,84 +279,110 @@ app.get("/test-companies", async (req, res) => {
   res.json({ test: "5 Danish Fashion Companies", results });
 });
 
+// ── SMTP HELPERS ──────────────────────────────────────────────────────────────
+function cleanName(raw) {
+  return (raw || '').replace(/^View\s+/i, '').replace(/'s\s+profile$/i, '').trim();
+}
+
+function generateCandidates(fullName, domain) {
+  const name = cleanName(fullName);
+  const parts = name.toLowerCase().replace(/[^a-z\s]/g, '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return [];
+  const first = parts[0], last = parts[parts.length - 1];
+  const f = first[0], l = last[0];
+  const allInitials = parts.map(p => p[0]).join('');
+  const raw = [
+    `${first}.${last}`,   // 1. firstname.lastname  (548 in DK data)
+    `${first}`,           // 2. firstname            (1116)
+    `${f}${l}`,           // 3. fl initials          (647)
+    allInitials,          // 4. all initials         (284)
+    `${first}${l}`,       // 5. firstnamel           (30)
+    `${first}.${l}`,      // 6. firstname.l          (24)
+    `${last}`,            // 7. lastname             (14)
+    `${f}.${last}`,       // 8. f.lastname           (12)
+    `${first}${last}`,    // 9. firstnamelastname    (12)
+  ];
+  const seen = new Set();
+  return raw
+    .filter(c => c && c.length > 0)
+    .map(c => `${c}@${domain}`)
+    .filter(email => {
+      if (seen.has(email)) return false;
+      seen.add(email);
+      return true;
+    });
+}
+
+async function smtpCheck(email) {
+  const net = require('net');
+  const dns = require('dns').promises;
+  return new Promise(async (resolve) => {
+    try {
+      const emailDomain = email.split('@')[1];
+      const mxRecords = await dns.resolveMx(emailDomain).catch(() => null);
+      if (!mxRecords || !mxRecords.length) return resolve(false);
+      const mx = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
+      const socket = net.createConnection(25, mx);
+      let buffer = '', step = 0, resolved = false;
+      const done = (result) => {
+        if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
+      };
+      socket.setTimeout(8000);
+      socket.on('timeout', () => done(false));
+      socket.on('error', () => done(false));
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString();
+        if (step === 0 && buffer.includes('220')) {
+          socket.write('EHLO kishorexports.com\r\n'); step = 1; buffer = '';
+        } else if (step === 1 && buffer.includes('250')) {
+          socket.write('MAIL FROM:<verify@kishorexports.com>\r\n'); step = 2; buffer = '';
+        } else if (step === 2 && buffer.includes('250')) {
+          socket.write(`RCPT TO:<${email}>\r\n`); step = 3; buffer = '';
+        } else if (step === 3) {
+          const valid = buffer.includes('250') || buffer.includes('251');
+          socket.write('QUIT\r\n');
+          done(valid);
+        }
+      });
+    } catch(e) { resolve(false); }
+  });
+}
+
 // ── SMTP EMAIL VERIFIER ───────────────────────────────────────────────────────
+
+// GET /verify-email?email=john@ganni.com  ← used by new CRM
+app.get("/verify-email", async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ error: "email query param required" });
+  try {
+    const valid = await smtpCheck(email);
+    res.json({ valid, email, message: valid ? 'Deliverable' : 'Not deliverable' });
+  } catch(e) {
+    res.json({ valid: false, email, message: 'Error: ' + e.message });
+  }
+});
+
+// POST /verify-email { full_name, domain }  ← used by old CRM / guessOne button
 app.post("/verify-email", async (req, res) => {
   const { full_name, domain } = req.body;
   if (!full_name || !domain) return res.status(400).json({ error: "full_name and domain required" });
-
-  const net = require('net');
-  const dns = require('dns').promises;
-
-  const parts = full_name.toLowerCase().replace(/[^a-z\s]/g, '').trim().split(/\s+/);
-  const first = parts[0] || '';
-  const last = parts[parts.length - 1] || '';
-  if (!first || !last) return res.json({ success: false, email: null, method: 'no_name' });
-
-  const guesses = [
-    `${first}.${last}@${domain}`,
-    `${first}@${domain}`,
-    `${first[0]}${last}@${domain}`,
-    `${first[0]}.${last}@${domain}`,
-    `${last}.${first}@${domain}`,
-    `${first}${last[0]}@${domain}`,
-  ];
-
-  async function smtpCheck(email) {
-    return new Promise(async (resolve) => {
-      try {
-        const emailDomain = email.split('@')[1];
-        const mxRecords = await dns.resolveMx(emailDomain).catch(() => null);
-        if (!mxRecords || !mxRecords.length) return resolve(false);
-        const mx = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
-
-        const socket = net.createConnection(25, mx);
-        let buffer = '';
-        let step = 0;
-        let resolved = false;
-
-        const done = (result) => {
-          if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
-        };
-
-        socket.setTimeout(8000);
-        socket.on('timeout', () => done(false));
-        socket.on('error', () => done(false));
-        socket.on('data', (chunk) => {
-          buffer += chunk.toString();
-          if (step === 0 && buffer.includes('220')) {
-            socket.write('EHLO kishorexports.com\r\n');
-            step = 1; buffer = '';
-          } else if (step === 1 && buffer.includes('250')) {
-            socket.write('MAIL FROM:<verify@kishorexports.com>\r\n');
-            step = 2; buffer = '';
-          } else if (step === 2 && buffer.includes('250')) {
-            socket.write(`RCPT TO:<${email}>\r\n`);
-            step = 3; buffer = '';
-          } else if (step === 3) {
-            const valid = buffer.includes('250') || buffer.includes('251');
-            socket.write('QUIT\r\n');
-            done(valid);
-          }
-        });
-      } catch(e) { resolve(false); }
-    });
-  }
-
+  const candidates = generateCandidates(full_name, domain);
+  if (!candidates.length) return res.json({ success: false, email: null, method: 'no_name' });
   try {
-    for (const email of guesses) {
+    for (const email of candidates) {
       const valid = await smtpCheck(email);
       if (valid) return res.json({ success: true, email, method: 'smtp_verified' });
     }
-    res.json({ success: false, email: guesses[0], method: 'best_guess' });
+    res.json({ success: false, email: candidates[0], method: 'best_guess' });
   } catch(e) {
-    res.json({ success: false, email: guesses[0], method: 'error', error: e.message });
+    res.json({ success: false, email: candidates[0], method: 'error', error: e.message });
   }
 });
 
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v7.1 — SMTP Verifier Added!",
+    status: "Kishor Lead Engine v7.2 — 9-Format SMTP Verifier",
     endpoints: {
       "POST /search":                    "Search by country (uses Hunter API)",
       "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
@@ -365,7 +391,8 @@ app.get("/", (req, res) => {
       "GET /companies":                  "All companies",
       "GET /contacts":                   "All contacts",
       "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "POST /verify-email":              "SMTP verify email (free!)",
+      "GET /verify-email?email=xxx":     "SMTP verify single email (free!)",
+      "POST /verify-email":              "SMTP verify by name+domain (free!)",
       "GET /credits":                    "Check Hunter credits",
       "GET /test-hunter":                "Test Hunter API",
       "GET /test-companies":             "Test 5 Danish companies",
@@ -375,7 +402,7 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.1 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v7.2 running on port " + PORT));
 
 // ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
 app.post("/save-company", async (req, res) => {
