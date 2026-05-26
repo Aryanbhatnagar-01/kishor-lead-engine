@@ -1,285 +1,590 @@
-const express = require("express");
-const { exec } = require("child_process");
-const { createClient } = require("@supabase/supabase-js");
-const cors = require("cors");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kishor People CRM</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#F0F2F8;
+  --surface:#FFFFFF;
+  --card:#FFFFFF;
+  --border:#E2E6F0;
+  --border2:#C8D0E0;
+  --text:#1A1D2E;
+  --muted:#6B7280;
+  --dim:#D0D5E8;
+  --blue:#3B6EE8;
+  --blue-dim:#EBF0FF;
+  --purple:#7C4EE8;
+  --purple-dim:#F0EBFF;
+  --green:#0D9E6E;
+  --green-dim:#E6F7F2;
+  --yellow:#D97706;
+  --yellow-dim:#FEF3E2;
+  --red:#DC2626;
+  --red-dim:#FEE8E8;
+}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh}
+a{text-decoration:none}
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+/* HEADER */
+.hdr{background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 28px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px #0000000A}
+.hdr-brand{display:flex;align-items:center;gap:10px}
+.hdr-logo{width:30px;height:30px;background:linear-gradient(135deg,var(--blue),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff}
+.hdr-title{font-size:14px;font-weight:600;color:#1A1D2E}
+.hdr-sub{font-size:11px;color:var(--muted);margin-top:1px}
+.stats{display:flex;gap:6px}
+.stat{background:#F5F7FF;border:1px solid var(--border);border-radius:20px;padding:4px 12px;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+.stat b{font-weight:600}
+.stat.blue b{color:var(--blue)}
+.stat.purple b{color:var(--purple)}
+.stat.green b{color:var(--green)}
+.stat.white b{color:#fff}
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-const SALESHANDY_API_KEY = process.env.SALESHANDY_API_KEY;
-const SALESHANDY_BASE = "https://open-api.saleshandy.com/v1";
-const HUNTER_KEY = process.env.HUNTER_API_KEY;
-const HUNTER_BASE = "https://api.hunter.io/v2";
+/* TOOLBAR */
+.toolbar{padding:14px 28px;display:flex;align-items:center;gap:8px;background:#F8F9FD;border-bottom:1px solid var(--border)}
+.search{flex:1;position:relative}
+.search input{width:100%;background:#FFFFFF;border:1px solid var(--border);border-radius:8px;padding:8px 12px 8px 36px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;outline:none;transition:border .15s}
+.search input:focus{border-color:var(--blue)}
+.search input::placeholder{color:var(--muted)}
+.search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px}
+.filters{display:flex;gap:4px}
+.filter{background:#FFFFFF;border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--muted);font-size:11px;font-family:'Inter',sans-serif;cursor:pointer;transition:all .15s;white-space:nowrap}
+.filter:hover{border-color:var(--border2);color:var(--text)}
+.filter.active{border-color:var(--blue);color:var(--blue);background:var(--blue-dim)}
+.actions{display:flex;gap:6px}
+.btn{border:none;border-radius:7px;padding:7px 14px;font-size:11px;font-weight:600;font-family:'Inter',sans-serif;cursor:pointer;transition:opacity .15s;white-space:nowrap}
+.btn:hover{opacity:.85}
+.btn-guess{background:linear-gradient(135deg,#059669,#047857);color:#fff}
+.btn-verify{background:linear-gradient(135deg,var(--yellow),#D97706);color:#fff}
+.btn-export{background:linear-gradient(135deg,var(--blue),var(--purple));color:#fff}
 
-let currentProcess = null;
-let isRunning = false;
-let progress = { step: "", pct: 0, log: [] };
+/* BANNER */
+.banner{margin:12px 28px;background:#E6F7F2;border:1px solid #0D9E6E40;border-radius:10px;padding:12px 16px;display:none;align-items:flex-start;gap:12px;font-size:12px}
+.banner.show{display:flex}
+.spinner{width:14px;height:14px;border:2px solid #34D39930;border-top-color:var(--green);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.banner-status{color:var(--green);font-weight:600}
+.banner-stats{display:flex;gap:16px;margin-left:auto}
+.banner-stats span{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)}
+.banner-stats b{font-weight:600}
+.banner-stats .bv b{color:var(--green)}
+.banner-stats .bf b{color:var(--red)}
+.banner-stats .br b{color:var(--yellow)}
 
-function addLog(msg) {
-  if (!msg || !msg.trim()) return;
-  progress.log.push(msg.trim());
-  if (progress.log.length > 100) progress.log.shift();
-  console.log(msg.trim());
+/* SECTION HDR */
+.section-hdr{padding:10px 28px;display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:10px;font-weight:600;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase}
+.section-count{font-size:11px;color:var(--muted)}
+.section-count b{color:var(--blue);font-weight:600}
+
+/* CONTENT */
+.content{padding:0 28px 40px}
+
+/* COMPANY GROUP */
+.co-group{background:#FFFFFF;border:1px solid var(--border);border-radius:12px;margin-bottom:10px;overflow:hidden;transition:all .2s;box-shadow:0 1px 3px #0000000A}
+.co-group:hover{border-color:#A0AACC;box-shadow:0 2px 8px #0000001A}
+
+.co-hdr{padding:14px 18px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background .15s}
+.co-hdr:hover{background:#F5F7FF}
+
+.co-av{width:36px;height:36px;flex-shrink:0;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff}
+.co-av-0{background:linear-gradient(135deg,#3B6EE8,#7C4EE8)}
+.co-av-1{background:linear-gradient(135deg,#0D9E6E,#0D7A55)}
+.co-av-2{background:linear-gradient(135deg,#E85555,#E8A020)}
+.co-av-3{background:linear-gradient(135deg,#7C4EE8,#C040A0)}
+.co-av-4{background:linear-gradient(135deg,#E8A020,#E85555)}
+
+.co-info{flex:1;min-width:0}
+.co-name{font-size:13px;font-weight:600;color:#1A1D2E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.co-meta{display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap}
+.co-tag{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:3px}
+.co-link{font-size:10px;color:var(--blue);opacity:.7;transition:opacity .15s}
+.co-link:hover{opacity:1}
+.co-link-g{color:var(--green)}
+
+.co-right{display:flex;align-items:center;gap:8px}
+.badge{padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600}
+.badge-p{background:var(--blue-dim);color:var(--blue);border:1px solid #4F8EF730}
+.badge-e{background:var(--green-dim);color:var(--green);border:1px solid #34D39930}
+.badge-ne{background:var(--dim);color:var(--muted);border:1px solid var(--border)}
+.co-toggle{color:var(--muted);font-size:11px;transition:transform .2s;margin-left:4px}
+.co-toggle.open{transform:rotate(180deg)}
+
+/* PEOPLE TABLE */
+.p-table{display:none}
+.p-table.open{display:block}
+.p-table table{width:100%;border-collapse:collapse}
+.p-table th{padding:8px 18px;text-align:left;font-size:9px;font-weight:600;color:var(--muted);letter-spacing:1px;text-transform:uppercase;border-bottom:1px solid var(--border);border-top:1px solid var(--border);background:#F8F9FD}
+.p-table td{padding:10px 18px;font-size:11px;border-bottom:1px solid var(--border);vertical-align:middle}
+.p-table tr:last-child td{border-bottom:none}
+.p-table tr:hover td{background:#F5F7FF}
+
+.p-av{width:24px;height:24px;border-radius:50%;background:#E8EBFF;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--blue);flex-shrink:0}
+.p-name{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:500}
+.p-title{color:var(--muted);font-size:10px}
+.p-loc{color:var(--muted);font-size:10px}
+.li-btn{display:inline-flex;align-items:center;gap:3px;color:var(--blue);font-size:10px;opacity:.6;transition:opacity .15s}
+.li-btn:hover{opacity:1}
+
+/* EMAIL TAGS */
+.etag{font-family:monospace;font-size:10px;padding:2px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:4px}
+.etag-v{background:var(--green-dim);color:var(--green);border:1px solid #34D39940}
+.etag-g{background:var(--yellow-dim);color:var(--yellow);border:1px solid #FBBF2440}
+.etag-f{background:var(--red-dim);color:var(--red);border:1px solid #F8717140}
+
+/* SOURCE */
+.src{font-size:9px;padding:2px 6px;border-radius:4px;font-weight:600}
+.src-a{background:var(--blue-dim);color:var(--blue);border:1px solid #4F8EF730}
+.src-l{background:var(--purple-dim);color:var(--purple);border:1px solid #9B6EF730}
+
+.both-badge{background:var(--yellow-dim);color:var(--yellow);border:1px solid #FBBF2430;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:4px}
+
+.guess-btn{background:none;border:1px solid var(--border2);border-radius:4px;padding:2px 8px;color:var(--muted);font-size:10px;cursor:pointer;transition:all .15s;font-family:'Inter',sans-serif}
+.guess-btn:hover{border-color:var(--blue);color:var(--blue)}
+.guess-btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* LOADING/EMPTY */
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px;gap:14px}
+.loading .spinner{width:32px;height:32px;border-width:2px;border-color:var(--border);border-top-color:var(--blue)}
+.loading-text{color:var(--muted);font-size:13px}
+.empty{text-align:center;padding:80px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-brand">
+    <div class="hdr-logo">K</div>
+    <div>
+      <div class="hdr-title">Kishor People CRM</div>
+      <div class="hdr-sub">Apollo + LinkedIn Contacts</div>
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat white"><b id="dbTotal">0</b> total companies</div>
+    <div class="stat blue"><b id="statApollo">0</b> apollo</div>
+    <div class="stat purple"><b id="statLinkedin">0</b> linkedin</div>
+    <div class="stat green"><b id="statEmail">0</b> with email</div>
+  </div>
+</div>
+
+<div class="toolbar">
+  <div class="search">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="searchInput" placeholder="Search name, company, title, location...">
+  </div>
+  <div class="filters">
+    <button class="filter active" onclick="setFilter('all',this)">All</button>
+    <button class="filter" onclick="setFilter('apollo',this)">🔵 Apollo</button>
+    <button class="filter" onclick="setFilter('linkedin',this)">🔗 LinkedIn</button>
+    <button class="filter" onclick="setFilter('verified',this)">✅ Verified</button>
+    <button class="filter" onclick="setFilter('unverified',this)">💡 Unverified</button>
+    <button class="filter" onclick="setFilter('noemail',this)">No Email</button>
+  </div>
+  <div class="actions">
+    <button class="btn btn-verify" onclick="findAndVerifyAll()" id="mainVerifyBtn">⚡ Find & Verify All Emails</button>
+    <button class="btn btn-export" onclick="exportCSV()">⬇ Export</button>
+  </div>
+</div>
+
+<div class="banner" id="banner">
+  <div style="width:100%">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <div class="spinner"></div>
+      <span class="banner-status" id="bannerStatus">Verifying...</span>
+      <div class="banner-stats" style="margin-left:auto;">
+        <span class="bv">✅ Verified: <b id="bv">0</b></span>
+        <span class="bf">❌ Failed: <b id="bf">0</b></span>
+        <span class="br">⏳ Remaining: <b id="br">0</b></span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-size:11px;color:#0D9E6E;font-weight:600;" id="bannerPerson"></span>
+      <span style="font-size:11px;color:#6B7280;" id="bannerFormat"></span>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:6px;" id="formatDots"></div>
+    <div style="height:3px;background:#E2E6F0;border-radius:2px;">
+      <div id="bannerBar" style="height:3px;background:#0D9E6E;border-radius:2px;width:0%;transition:width 0.3s;"></div>
+    </div>
+  </div>
+</div>
+
+<div class="section-hdr">
+  <div class="section-title">Companies & People</div>
+  <div class="section-count">Showing <b id="showCo">0</b> companies · <b id="showPpl">0</b> people</div>
+</div>
+
+<div class="content" id="content">
+  <div class="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading from Supabase...</div>
+  </div>
+</div>
+
+<script>
+const SB = 'https://upbnlzvxpfsyzwsgajzo.supabase.co';
+const SK = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYm5senZ4cGZzeXp3c2dhanpvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwODA3MjYsImV4cCI6MjA5NDY1NjcyNn0.RAbkIQZnDSQJbhV4wv_uPw_PugY915EQA0BmVKF7gyc';
+const RENDER = 'https://kishor-lead-engine.onrender.com';
+
+let allPeople = [], coMap = {}, curFilter = 'all', searchQ = '';
+
+const h = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function initials(name) {
+  if (!name) return '?';
+  return name.split(' ').map(w => w[0]).join('').substring(0,2).toUpperCase();
 }
 
-// ── STATS ─────────────────────────────────────────────────────────────────────
-app.get("/stats", async (req, res) => {
-  const [c, ct] = await Promise.all([
-    supabase.from("companies").select("*", { count: "exact", head: true }),
-    supabase.from("contacts").select("*", { count: "exact", head: true })
+function avatarClass(name) {
+  const n = (name || '').charCodeAt(0) % 5;
+  return `co-av-${n}`;
+}
+
+async function api(path, opts={}) {
+  const r = await fetch(`${SB}/rest/v1/${path}`, {
+    headers: { 'apikey': SK, 'Authorization': `Bearer ${SK}`, ...opts.headers },
+    ...opts
+  });
+  return r;
+}
+
+async function load() {
+  const [pRes, cRes, cCount] = await Promise.all([
+    api('people?select=*&order=created_at.desc&limit=5000'),
+    api('companies?select=id,company_name,linkedin_url,city,country,website,full_url&limit=2000'),
+    api('companies?select=id', { headers: { 'Prefer': 'count=exact', 'Range': '0-0' } })
   ]);
-  res.json({ companies: c.count || 0, contacts: ct.count || 0 });
-});
 
-// ── START SEARCH ──────────────────────────────────────────────────────────────
-app.post("/search", async (req, res) => {
-  const { country } = req.body;
-  if (!country) return res.status(400).json({ error: "Country required" });
-  if (isRunning) return res.status(400).json({ error: "Already running. Stop first." });
+  allPeople = await pRes.json();
+  const cos = await cRes.json();
+  cos.forEach(c => coMap[c.company_name] = c);
 
-  isRunning = true;
-  progress = { step: "Starting", pct: 5, log: [] };
-  addLog("Starting search for " + country + "...");
-  res.json({ message: "Search started", country });
+  const totalCo = (cCount.headers.get('content-range') || '').split('/')[1] || cos.length;
+  h('dbTotal').textContent = Number(totalCo).toLocaleString();
 
-  progress.step = "Agent 3";
-  progress.pct = 10;
-  addLog("Searching companies and buyers in " + country + "...");
+  render();
+}
 
-  const agent3 = exec("node agent3-enrichment.js \"" + country + "\"");
-  currentProcess = agent3;
-
-  agent3.stdout.on("data", data => {
-    addLog(data.trim());
-    progress.pct = Math.min(95, progress.pct + 2);
-  });
-  agent3.stderr.on("data", data => addLog("Warning: " + data.trim()));
-  agent3.on("close", code => {
-    isRunning = false;
-    currentProcess = null;
-    if (code !== 0) {
-      addLog("Search failed with code " + code);
-      progress.step = "Error";
-    } else {
-      progress.pct = 100;
-      progress.step = "Done";
-      addLog("Search complete for " + country + "!");
-      addLog("Companies and buyers saved. Reveal emails from CRM.");
-    }
-  });
-});
-
-// ── HUNTER SCRAPER ────────────────────────────────────────────────────────────
-app.post("/scrape-hunter", async (req, res) => {
-  const { country } = req.body;
-  if (!country) return res.status(400).json({ error: "Country required" });
-  if (isRunning) return res.status(400).json({ error: "Already running. Stop first." });
-
-  isRunning = true;
-  progress = { step: "Scraping", pct: 5, log: [] };
-  addLog(`Starting Hunter UI scraper for ${country}...`);
-  addLog("No credits used — UI automation!");
-  res.json({ message: "Scraper started", country });
-
-  const scraper = exec(`node hunter-scraper.js "${country}"`);
-  currentProcess = scraper;
-
-  scraper.stdout.on("data", data => {
-    addLog(data.trim());
-    progress.pct = Math.min(95, progress.pct + 3);
-  });
-  scraper.stderr.on("data", data => addLog("Warning: " + data.trim()));
-  scraper.on("close", code => {
-    isRunning = false;
-    currentProcess = null;
-    progress.pct = 100;
-    progress.step = code !== 0 ? "Error" : "Done";
-    addLog(code !== 0 ? "Scraper failed" : "Scraper complete! Check CRM for results.");
-  });
-});
-
-// ── STOP ──────────────────────────────────────────────────────────────────────
-app.post("/stop", (req, res) => {
-  if (currentProcess) { currentProcess.kill(); currentProcess = null; }
-  isRunning = false;
-  progress.step = "Stopped";
-  addLog("Stopped by user.");
-  res.json({ message: "Stopped" });
-});
-
-// ── STATUS ────────────────────────────────────────────────────────────────────
-app.get("/status", (req, res) => res.json({ isRunning, progress }));
-
-// ── COMPANIES ─────────────────────────────────────────────────────────────────
-app.get("/companies", async (req, res) => {
-  const { country, status, category } = req.query;
-  let query = supabase.from("companies").select("*").order("created_at", { ascending: false });
-  if (country) query = query.eq("country", country);
-  if (status) query = query.eq("status", status);
-  if (category) query = query.eq("category", category);
-  const { data, error } = await query.limit(500);
-  if (error) return res.status(500).json({ error });
-  res.json(data);
-});
-
-app.patch("/companies/:id", async (req, res) => {
-  const { error } = await supabase.from("companies")
-    .update({ status: req.body.status })
-    .eq("id", req.params.id);
-  if (error) return res.status(500).json({ error });
-  res.json({ success: true });
-});
-
-// ── CONTACTS ──────────────────────────────────────────────────────────────────
-app.get("/contacts", async (req, res) => {
-  const { company_id, country } = req.query;
-  let query = supabase.from("contacts").select("*").order("created_at", { ascending: false });
-  if (company_id) query = query.eq("company_id", company_id);
-  if (country) query = query.eq("country", country);
-  const { data, error } = await query.limit(1000);
-  if (error) return res.status(500).json({ error });
-  res.json(data);
-});
-
-// ── REVEAL EMAIL — Hunter email finder ────────────────────────────────────────
-app.post("/contacts/:id/reveal-email", async (req, res) => {
-  if (!HUNTER_KEY) return res.status(500).json({ error: "HUNTER_API_KEY not set" });
-
-  const { data: contact, error: fetchError } = await supabase
-    .from("contacts").select("*").eq("id", req.params.id).single();
-
-  if (fetchError || !contact) return res.status(404).json({ error: "Contact not found" });
-  if (contact.email_revealed && contact.email_1) {
-    return res.json({ email: contact.email_1, already_revealed: true });
+function filtered() {
+  let p = [...allPeople];
+  if (curFilter === 'apollo') p = p.filter(x => x.source === 'apollo');
+  if (curFilter === 'linkedin') p = p.filter(x => x.source === 'linkedin_extension');
+  if (curFilter === 'email') p = p.filter(x => x.email);
+  if (curFilter === 'noemail') p = p.filter(x => !x.email);
+  if (curFilter === 'verified') p = p.filter(x => x.email && x.email_status === 'verified');
+  if (curFilter === 'unverified') p = p.filter(x => x.email && x.email_status !== 'verified');
+  if (searchQ) {
+    const q = searchQ.toLowerCase();
+    p = p.filter(x =>
+      (x.full_name||'').toLowerCase().includes(q) ||
+      (x.company_name||'').toLowerCase().includes(q) ||
+      (x.title||'').toLowerCase().includes(q) ||
+      (x.location||'').toLowerCase().includes(q) ||
+      (x.email||'').toLowerCase().includes(q)
+    );
   }
+  return p;
+}
 
-  try {
-    if (!contact.company_website) {
-      return res.status(400).json({ error: "No company domain to search" });
+function groupBy(people) {
+  const g = {};
+  people.forEach(p => {
+    const k = p.company_name || 'Unknown';
+    if (!g[k]) g[k] = [];
+    g[k].push(p);
+  });
+  return g;
+}
+
+function urlCount(people) {
+  const uc = {}, nc = {};
+  people.forEach(p => {
+    if (p.linkedin_url) uc[p.linkedin_url] = (uc[p.linkedin_url]||0)+1;
+    const k = ((p.full_name||'')+'|'+(p.company_name||'')).toLowerCase();
+    nc[k] = (nc[k]||0)+1;
+  });
+  return { uc, nc };
+}
+
+function renderUnverifiedSection(people, uc, nc, total) {
+  const byCompany = groupBy(people);
+  const sorted = Object.entries(byCompany).sort((a,b) => b[1].length - a[1].length);
+
+  let html = `
+    <div style="background:#FEF3E2;border:1px solid #FBBF2460;border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div>
+        <div style="font-size:13px;font-weight:600;color:#D97706;">💡 ${total} Unverified Emails</div>
+        <div style="font-size:11px;color:#92400E;margin-top:2px;">These emails were guessed but not SMTP verified. Re-verify to confirm or discard.</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" style="background:linear-gradient(135deg,#D97706,#B45309);color:#fff;font-size:11px;" onclick="reVerifyUnverified()">⚡ Re-Verify All Unverified</button>
+        <button class="btn" style="background:linear-gradient(135deg,#DC2626,#B91C1C);color:#fff;font-size:11px;" onclick="clearUnverified()">🗑 Clear All Unverified</button>
+        <button class="btn btn-export" onclick="exportUnverified()">⬇ Export Unverified</button>
+      </div>
+    </div>`;
+
+  let idx = 0;
+  sorted.forEach(([coName, people]) => {
+    const co = coMap[coName] || {};
+    const website = (co.website || co.full_url || '').replace(/https?:\/\//,'').replace(/www\./,'').split('/')[0];
+    const av = avatarClass(coName);
+    const gid = 'uv'+idx; idx++;
+
+    html += `<div class="co-group" id="${gid}" style="border-left:3px solid #D97706;">
+      <div class="co-hdr" onclick="toggle('${gid}')">
+        <div class="co-av ${av}">${initials(coName)}</div>
+        <div class="co-info">
+          <div class="co-name">${coName}</div>
+          <div class="co-meta">
+            ${website ? `<a class="co-link co-link-g" href="https://${website}" target="_blank" onclick="event.stopPropagation()">🌐 ${website}</a>` : ''}
+          </div>
+        </div>
+        <div class="co-right">
+          <span class="badge" style="background:#FEF3E2;color:#D97706;border:1px solid #FBBF2440;">${people.length} unverified</span>
+          <span class="co-toggle" id="tog-${gid}">▼</span>
+        </div>
+      </div>
+      <div class="p-table" id="tbl-${gid}">
+        <table>
+          <thead><tr>
+            <th>Name</th><th>Title</th><th>Email (Unverified)</th><th>Action</th>
+          </tr></thead>
+          <tbody>
+            ${people.map(p => `<tr>
+              <td><div class="p-name">
+                <div class="p-av">${initials(p.full_name)}</div>
+                ${cleanName(p.full_name) || '—'}
+              </div></td>
+              <td><div class="p-title">${p.title || '—'}</div></td>
+              <td>
+                <div style="display:flex;flex-direction:column;gap:2px;">
+                  <span class="etag etag-g" id="et-${p.id}">${p.email}</span>
+                  <span style="font-size:9px;color:var(--yellow)">💡 Guessed — not verified</span>
+                </div>
+              </td>
+              <td style="display:flex;gap:4px;">
+                <button class="guess-btn" style="border-color:#D97706;color:#D97706;" onclick="reVerifyOne('${p.id}','${(p.full_name||'').replace(/'/g,"\'")}','${coName.replace(/'/g,"\'")}',this)">↺ Re-verify</button>
+                <button class="guess-btn" style="border-color:#DC2626;color:#DC2626;" onclick="clearOne('${p.id}',this)">✕ Clear</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  });
+
+  h('content').innerHTML = html;
+  if (idx > 0) toggle('uv0');
+}
+
+async function reVerifyOne(id, name, coName, btn) {
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  const domain = await getDomain(coName);
+  if (!domain) { btn.textContent = 'No domain'; btn.disabled = false; return; }
+  const data = await smtpVerify(name, domain);
+  const p = allPeople.find(x => x.id === id);
+  if (data.success && data.method === 'smtp_verified') {
+    if (p) { p.email = data.email; p.email_status = 'verified'; }
+    await saveMail(id, data.email);
+    const tag = h('et-'+id);
+    if (tag) {
+      tag.className = 'etag etag-v';
+      tag.textContent = data.email;
+      tag.nextElementSibling.textContent = '✅ Verified!';
+      tag.nextElementSibling.style.color = 'var(--green)';
     }
+    btn.textContent = '✅';
+  } else {
+    btn.textContent = '❌ Failed';
+    btn.disabled = false;
+  }
+}
 
-    const params = new URLSearchParams({
-      api_key:    HUNTER_KEY,
-      domain:     contact.company_website,
-      first_name: contact.first_name || "",
-      last_name:  contact.last_name  || "",
+async function clearOne(id, btn) {
+  if (!confirm('Clear this email?')) return;
+  btn.disabled = true;
+  await fetch(`${SB}/rest/v1/people?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'apikey': SK, 'Authorization': `Bearer ${SK}` },
+    body: JSON.stringify({ email: null })
+  });
+  const p = allPeople.find(x => x.id === id);
+  if (p) { p.email = null; p.email_status = null; }
+  btn.closest('tr').style.opacity = '0.3';
+  h('statEmail').textContent = allPeople.filter(p=>p.email).length;
+}
+
+async function reVerifyUnverified() {
+  const unverified = allPeople.filter(p => p.email && p.email_status !== 'verified');
+  if (!unverified.length) { alert('No unverified emails!'); return; }
+  if (!confirm(`Re-verify ${unverified.length} unverified emails via SMTP?`)) return;
+  setFilter('unverified', document.querySelector('.filter.active'));
+  findAndVerifyAll();
+}
+
+async function clearUnverified() {
+  const unverified = allPeople.filter(p => p.email && p.email_status !== 'verified');
+  if (!unverified.length) { alert('No unverified emails to clear!'); return; }
+  if (!confirm(`Clear ALL ${unverified.length} unverified emails from database? This cannot be undone.`)) return;
+  for (const p of unverified) {
+    await fetch(`${SB}/rest/v1/people?id=eq.${p.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'apikey': SK, 'Authorization': `Bearer ${SK}` },
+      body: JSON.stringify({ email: null })
     });
-
-    const r    = await fetch(`${HUNTER_BASE}/email-finder?${params}`);
-    const data = await r.json();
-    const email = data.data?.email || null;
-
-    if (email) {
-      await supabase.from("contacts").update({
-        email_1:            email,
-        email_revealed:     true,
-        email_revealed_at:  new Date().toISOString()
-      }).eq("id", req.params.id);
-      res.json({ email, success: true, confidence: data.data?.score });
-    } else {
-      res.json({ email: null, success: false, message: "Email not found" });
-    }
-  } catch(e) {
-    res.status(500).json({ error: e.message });
+    p.email = null; p.email_status = null;
   }
-});
+  h('statEmail').textContent = allPeople.filter(p=>p.email).length;
+  render();
+}
 
-// ── CREDITS ───────────────────────────────────────────────────────────────────
-app.get("/credits", async (req, res) => {
-  if (!HUNTER_KEY) return res.status(500).json({ error: "No HUNTER_API_KEY" });
-  try {
-    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
-    const data = await r.json();
-    res.json({
-      searches_left:       data.data?.requests?.searches?.available,
-      verifications_left:  data.data?.requests?.verifications?.available,
-      plan:                data.data?.plan_name
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+function exportUnverified() {
+  const unverified = allPeople.filter(p => p.email && p.email_status !== 'verified');
+  const headers = ['Full Name','Title','Company','Email','LinkedIn'];
+  const rows = unverified.map(p => [
+    cleanName(p.full_name||''), p.title||'', p.company_name||'', p.email||'', p.linkedin_url||''
+  ]);
+  const csv = [headers,...rows].map(r=>r.map(c=>`"${(c||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8'});
+  const a = Object.assign(document.createElement('a'), {href:URL.createObjectURL(blob), download:`unverified-emails-${new Date().toISOString().split('T')[0]}.csv`});
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
 
-// ── TEST HUNTER ───────────────────────────────────────────────────────────────
-app.get("/test-hunter", async (req, res) => {
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-  const results = {};
+function render() {
+  const f = filtered();
+  const g = groupBy(f);
+  const { uc, nc } = urlCount(allPeople);
 
-  try {
-    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
-    const data = await r.json();
-    results.account = {
-      plan:                data.data?.plan_name,
-      searches_left:       data.data?.requests?.searches?.available,
-      verifications_left:  data.data?.requests?.verifications?.available
-    };
-  } catch(e) { results.account = { error: e.message }; }
+  const verifiedCount = allPeople.filter(p=>p.email && p.email_status==='verified').length;
+  const unverifiedCount = allPeople.filter(p=>p.email && p.email_status!=='verified').length;
+  const noEmailCount = allPeople.filter(p=>!p.email).length;
 
-  try {
-    const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: "bestseller.com", limit: 5 });
-    const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
-    const data = await r.json();
-    results.domain_search = {
-      company:      data.data?.organization,
-      total_emails: data.meta?.results || 0,
-      sample:       (data.data?.emails || []).slice(0, 3).map(e => ({
-        name:  `${e.first_name} ${e.last_name}`,
-        title: e.position,
-        email: e.value
-      }))
-    };
-  } catch(e) { results.domain_search = { error: e.message }; }
+  h('statApollo').textContent = allPeople.filter(p=>p.source==='apollo').length;
+  h('statLinkedin').textContent = allPeople.filter(p=>p.source==='linkedin_extension').length;
+  h('statEmail').textContent = allPeople.filter(p=>p.email).length;
+  h('showCo').textContent = Object.keys(g).length;
+  h('showPpl').textContent = f.length;
 
-  res.json(results);
-});
-
-// ── TEST 5 COMPANIES ──────────────────────────────────────────────────────────
-app.get("/test-companies", async (req, res) => {
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-
-  const TEST_COMPANIES = [
-    { name: "BESTSELLER",    domain: "bestseller.com" },
-    { name: "Ganni",         domain: "ganni.com" },
-    { name: "Samsoe Samsoe", domain: "samsoe.com" },
-    { name: "Les Deux",      domain: "lesdeux.com" },
-    { name: "Gestuz",        domain: "gestuz.com" },
-  ];
-
-  const TARGET_TITLES = ["buyer","buying","sourcing","procurement","purchasing","merchandise","import","supply","director","head"];
-  const results = [];
-
-  for (const company of TEST_COMPANIES) {
-    try {
-      const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: company.domain, limit: 10, type: "personal" });
-      const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
-      const data = await r.json();
-      const allEmails = data.data?.emails || [];
-      const buyers = allEmails.filter(e => {
-        const title = (e.position || "").toLowerCase();
-        return TARGET_TITLES.some(t => title.includes(t));
-      });
-      results.push({
-        company:      company.name,
-        domain:       company.domain,
-        total_people: data.meta?.results || 0,
-        buyers_found: buyers.length,
-        buyers:       buyers.map(e => ({
-          name:       `${e.first_name || ""} ${e.last_name || ""}`.trim(),
-          title:      e.position    || "—",
-          email:      e.value       || "—",
-          linkedin:   e.linkedin    || null,
-          confidence: e.confidence  || null
-        }))
-      });
-      await new Promise(r => setTimeout(r, 800));
-    } catch(e) {
-      results.push({ company: company.name, error: e.message });
-    }
+  if (!f.length) {
+    h('content').innerHTML = '<div class="empty">No people found.</div>';
+    return;
   }
-  res.json({ test: "5 Danish Fashion Companies", results });
-});
 
-// ── SMTP HELPERS ──────────────────────────────────────────────────────────────
+  // Special unverified section view
+  if (curFilter === 'unverified') {
+    renderUnverifiedSection(f, uc, nc, unverifiedCount);
+    return;
+  }
+
+  const sorted = Object.entries(g).sort((a,b) => b[1].length - a[1].length);
+  let html = '';
+  let idx = 0;
+
+  sorted.forEach(([coName, people]) => {
+    const co = coMap[coName] || {};
+    const loc = co.city ? `${co.city}${co.country ? ', '+co.country : ''}` : (co.country || '');
+    const liUrl = co.linkedin_url || '';
+    const website = (co.website || co.full_url || '').replace(/https?:\/\//, '').replace(/www\./,'').split('/')[0];
+    const emailCnt = people.filter(p=>p.email).length;
+    const av = avatarClass(coName);
+    const gid = 'g'+idx;
+    idx++;
+
+    html += `<div class="co-group" id="${gid}">
+      <div class="co-hdr" onclick="toggle('${gid}')">
+        <div class="co-av ${av}">${initials(coName)}</div>
+        <div class="co-info">
+          <div class="co-name">${coName}</div>
+          <div class="co-meta">
+            ${loc ? `<span class="co-tag">📍 ${loc}</span>` : ''}
+            ${liUrl ? `<a class="co-link" href="${liUrl}" target="_blank" onclick="event.stopPropagation()">🔗 LinkedIn</a>` : ''}
+            ${website ? `<a class="co-link co-link-g" href="https://${website}" target="_blank" onclick="event.stopPropagation()">🌐 ${website}</a>` : ''}
+          </div>
+        </div>
+        <div class="co-right">
+          <span class="badge badge-p">${people.length} people</span>
+          ${emailCnt > 0 
+            ? `<span class="badge badge-e">${emailCnt} emails</span>`
+            : `<span class="badge badge-ne">no emails</span>`}
+          <span class="co-toggle" id="tog-${gid}">▼</span>
+        </div>
+      </div>
+      <div class="p-table" id="tbl-${gid}">
+        <table>
+          <thead><tr>
+            <th>Name</th><th>Title</th><th>Location</th>
+            <th>LinkedIn</th><th>Source</th><th>Email</th>
+          </tr></thead>
+          <tbody>
+            ${people.map(p => {
+              const dupUrl = uc[p.linkedin_url] > 1;
+              const dupName = nc[((p.full_name||'')+'|'+(p.company_name||'')).toLowerCase()] > 1;
+              const isDup = dupUrl || dupName;
+              const srcClass = p.source === 'apollo' ? 'src-a' : 'src-l';
+              const srcLabel = p.source === 'apollo' ? '🔵 Apollo' : '🔗 LinkedIn';
+              const eClass = p.email_status === 'verified' ? 'etag-v' : p.email_status === 'failed' ? 'etag-f' : 'etag-g';
+              return `<tr>
+                <td><div class="p-name">
+                  <div class="p-av">${initials(p.full_name)}</div>
+                  ${p.full_name || '—'}
+                </div></td>
+                <td><div class="p-title">${p.title || '—'}</div></td>
+                <td><div class="p-loc">${p.location || '—'}</div></td>
+                <td>${p.linkedin_url ? `<a class="li-btn" href="${p.linkedin_url}" target="_blank">🔗 Profile</a>` : '—'}</td>
+                <td>
+                  <span class="src ${srcClass}">${srcLabel}</span>
+                  ${isDup ? '<span class="both-badge">⚡ Both</span>' : ''}
+                </td>
+                <td>
+                  ${p.email
+                    ? `<div style="display:flex;flex-direction:column;gap:2px;">
+                        <span class="etag ${eClass}" id="et-${p.id}" title="${p.email_status === 'verified' ? 'SMTP Verified' : p.email_status === 'failed' ? 'Not verified' : 'Guessed'}">${p.email}</span>
+                        <span style="font-size:9px;color:${p.email_status === 'verified' ? 'var(--green)' : p.email_status === 'failed' ? 'var(--red)' : 'var(--yellow)'}">${p.email_status === 'verified' ? '✅ Verified' : p.email_status === 'failed' ? '❌ Not verified' : '💡 Guessed'}</span>
+                       </div>`
+                    : `<button class="guess-btn" data-id="${p.id}" onclick="guessOne('${p.id}','${(p.full_name||'').replace(/'/g,"\\'")}','${coName.replace(/'/g,"\\'")}',this)">Guess Email</button>`}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  });
+
+  h('content').innerHTML = html;
+
+  // Auto-open first
+  toggle('g0');
+}
+
+function toggle(gid) {
+  const tbl = h('tbl-'+gid);
+  const tog = h('tog-'+gid);
+  if (tbl) tbl.classList.toggle('open');
+  if (tog) tog.classList.toggle('open');
+}
+
+function setFilter(f, btn) {
+  curFilter = f;
+  document.querySelectorAll('.filter').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  render();
+}
+
+h('searchInput').addEventListener('input', e => { searchQ = e.target.value; render(); });
+
+async function getDomain(coName) {
+  const co = coMap[coName] || {};
+  const raw = co.website || co.full_url || '';
+  return raw.replace(/https?:\/\//, '').replace(/www\./,'').split('/')[0];
+}
+
 function cleanName(raw) {
   return (raw || '').replace(/^View\s+/i, '').replace(/'s\s+profile$/i, '').trim();
 }
@@ -292,175 +597,247 @@ function generateCandidates(fullName, domain) {
   const f = first[0], l = last[0];
   const allInitials = parts.map(p => p[0]).join('');
   const raw = [
-    `${first}.${last}`,   // 1. firstname.lastname  (548 in DK data)
-    `${first}`,           // 2. firstname            (1116)
-    `${f}${l}`,           // 3. fl initials          (647)
-    allInitials,          // 4. all initials         (284)
-    `${first}${l}`,       // 5. firstnamel           (30)
-    `${first}.${l}`,      // 6. firstname.l          (24)
-    `${last}`,            // 7. lastname             (14)
-    `${f}.${last}`,       // 8. f.lastname           (12)
-    `${first}${last}`,    // 9. firstnamelastname    (12)
+    `${first}.${last}`,      // 1. firstname.lastname  (548 in DK list)
+    `${first}`,              // 2. firstname            (1116)
+    `${f}${l}`,              // 3. fl initials          (647)
+    allInitials,             // 4. all initials         (284)
+    `${first}${l}`,          // 5. firstnamel           (30)
+    `${first}.${l}`,         // 6. firstname.l          (24)
+    `${last}`,               // 7. lastname             (14)
+    `${f}.${last}`,          // 8. f.lastname           (12)
+    `${first}${last}`,       // 9. firstnamelastname    (12)
   ];
   const seen = new Set();
   return raw
     .filter(c => c && c.length > 0)
     .map(c => `${c}@${domain}`)
-    .filter(email => {
-      if (seen.has(email)) return false;
-      seen.add(email);
-      return true;
-    });
+    .filter(email => { if (seen.has(email)) return false; seen.add(email); return true; });
 }
 
-async function smtpCheck(email) {
-  const net = require('net');
-  const dns = require('dns').promises;
-  return new Promise(async (resolve) => {
-    try {
-      const emailDomain = email.split('@')[1];
-      const mxRecords = await dns.resolveMx(emailDomain).catch(() => null);
-      if (!mxRecords || !mxRecords.length) return resolve(false);
-      const mx = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
-      const socket = net.createConnection(25, mx);
-      let buffer = '', step = 0, resolved = false;
-      const done = (result) => {
-        if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
-      };
-      socket.setTimeout(25000);
-      socket.on('timeout', () => done(false));
-      socket.on('error', () => done(false));
-      socket.on('data', (chunk) => {
-        buffer += chunk.toString();
-        if (step === 0 && buffer.includes('220')) {
-          socket.write('EHLO kishorexports.com\r\n'); step = 1; buffer = '';
-        } else if (step === 1 && buffer.includes('250')) {
-          socket.write('MAIL FROM:<verify@kishorexports.com>\r\n'); step = 2; buffer = '';
-        } else if (step === 2 && buffer.includes('250')) {
-          socket.write(`RCPT TO:<${email}>\r\n`); step = 3; buffer = '';
-        } else if (step === 3) {
-          const valid = buffer.includes('250') || buffer.includes('251');
-          socket.write('QUIT\r\n');
-          done(valid);
-        }
-      });
-    } catch(e) { resolve(false); }
-  });
+const FORMAT_LABELS = [
+  'firstname.lastname','firstname','fl','all_initials',
+  'firstnamel','firstname.l','lastname','f.lastname','firstnamelastname'
+];
+
+function renderFormatDots(candidates, currentIdx, result) {
+  const dots = h('formatDots');
+  if (!dots) return;
+  dots.innerHTML = candidates.map((email, i) => {
+    const label = FORMAT_LABELS[i] || `f${i+1}`;
+    const local = email.split('@')[0];
+    let bg, title;
+    if (i < currentIdx) { bg = result && i === result ? '#0D9E6E' : '#DC2626'; title = '✗'; }
+    else if (i === currentIdx) { bg = '#D97706'; title = '⏳'; }
+    else { bg = '#E2E6F0'; title = ''; }
+    return `<span title="${label}: ${email}" style="background:${bg};color:#fff;font-size:9px;padding:2px 6px;border-radius:3px;font-family:monospace;cursor:default;">${local}</span>`;
+  }).join('');
 }
 
-// ── SMTP EMAIL VERIFIER ───────────────────────────────────────────────────────
-
-// GET /verify-email?email=john@ganni.com  ← used by new CRM
-app.get("/verify-email", async (req, res) => {
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: "email query param required" });
-  try {
-    const valid = await smtpCheck(email);
-    res.json({ valid, email, message: valid ? 'Deliverable' : 'Not deliverable' });
-  } catch(e) {
-    res.json({ valid: false, email, message: 'Error: ' + e.message });
-  }
-});
-
-// POST /verify-email { full_name, domain }  ← used by old CRM / guessOne button
-app.post("/verify-email", async (req, res) => {
-  const { full_name, domain } = req.body;
-  if (!full_name || !domain) return res.status(400).json({ error: "full_name and domain required" });
+async function smtpVerify(full_name, domain, onProgress) {
   const candidates = generateCandidates(full_name, domain);
-  if (!candidates.length) return res.json({ success: false, email: null, method: 'no_name' });
-  try {
-    for (const email of candidates) {
-      const valid = await smtpCheck(email);
-      if (valid) return res.json({ success: true, email, method: 'smtp_verified' });
+  if (!candidates.length) return { success: false, email: null };
+  let verifiedIdx = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const email = candidates[i];
+    if (onProgress) onProgress(candidates, i, null);
+    try {
+      // 10 second timeout per check — skip slow/hanging domains
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 28000);
+      const r = await fetch(`${RENDER}/verify-email?email=${encodeURIComponent(email)}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await r.json();
+      if (data.valid === true) {
+        if (onProgress) onProgress(candidates, i, i);
+        return { success: true, email, method: 'smtp_verified' };
+      }
+    } catch(e) {
+      // timeout or network error — skip this format, continue
+      if (e.name === 'AbortError') {
+        if (onProgress) onProgress(candidates, candidates.length, null);
+        return { success: false, email: candidates[0], method: 'timeout' };
+      }
     }
-    res.json({ success: false, email: candidates[0], method: 'best_guess' });
-  } catch(e) {
-    res.json({ success: false, email: candidates[0], method: 'error', error: e.message });
+    await new Promise(r => setTimeout(r, 200));
   }
-});
+  if (onProgress) onProgress(candidates, candidates.length, null);
+  return { success: false, email: candidates[0], method: 'guess' };
+}
 
-// ── CRM ───────────────────────────────────────────────────────────────────────
-const path = require('path');
-app.get('/crm', (req, res) => {
-  res.sendFile(path.join(__dirname, 'people-crm-v2.html'));
-});
-
-// ── ROOT ──────────────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.json({
-    status: "Kishor Lead Engine v7.3 — CRM Hosted + 9-Format SMTP Verifier",
-    endpoints: {
-      "POST /search":                    "Search by country (uses Hunter API)",
-      "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
-      "GET /status":                     "Check progress",
-      "POST /stop":                      "Stop current job",
-      "GET /companies":                  "All companies",
-      "GET /contacts":                   "All contacts",
-      "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "GET /verify-email?email=xxx":     "SMTP verify single email (free!)",
-      "GET /crm":                        "People CRM dashboard",
-      "POST /verify-email":              "SMTP verify by name+domain (free!)",
-      "GET /credits":                    "Check Hunter credits",
-      "GET /test-hunter":                "Test Hunter API",
-      "GET /test-companies":             "Test 5 Danish companies",
-      "GET /stats":                      "DB counts"
-    }
+async function saveMail(id, email) {
+  await fetch(`${SB}/rest/v1/people?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'apikey': SK, 'Authorization': `Bearer ${SK}` },
+    body: JSON.stringify({ email })
   });
-});
+  const p = allPeople.find(x => x.id === id);
+  if (p) p.email = email;
+  h('statEmail').textContent = allPeople.filter(p=>p.email).length;
+}
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.3 running on port " + PORT));
+async function guessOne(id, name, coName, btn) {
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  const domain = await getDomain(coName);
+  if (!domain) { btn.textContent = 'No domain'; return; }
+  const data = await smtpVerify(name, domain);
+  if (data.email) {
+    await saveMail(id, data.email);
+    const cell = btn.parentElement;
+    const cls = data.method === 'smtp_verified' ? 'etag-v' : 'etag-g';
+    cell.innerHTML = `<span class="etag ${cls}" id="et-${id}">${data.email}</span>`;
+    const p = allPeople.find(x=>x.id===id);
+    if (p) p.email_status = data.method === 'smtp_verified' ? 'verified' : 'guess';
+  } else {
+    btn.textContent = 'No email found';
+    btn.disabled = false;
+  }
+}
 
-// ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
-app.post("/save-company", async (req, res) => {
-  const { name, domain, industry, size, country, source } = req.body;
-  if (!name && !domain) return res.status(400).json({ error: "No data" });
-  try {
-    const { error } = await supabase.from("companies").upsert({
-      company_name: name || domain,
-      website:      domain || null,
-      full_url:     domain ? "https://" + domain : null,
-      category:     industry || "Fashion",
-      industry:     industry || null,
-      country:      country  || "unknown",
-      company_size: size     || null,
-      status:       "discovered",
-      enriched:     true,
-      source:       source || "extension",
-      created_at:   new Date().toISOString()
-    }, { onConflict: domain ? "website" : "company_name", ignoreDuplicates: true });
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+async function findAndVerifyAll() {
+  // Targets: people with no email OR unverified email
+  const noEmail = allPeople.filter(p => !p.email);
+  const unverified = allPeople.filter(p => p.email && p.email_status !== 'verified');
+  const alreadyVerified = allPeople.filter(p => p.email_status === 'verified').length;
+  const total = noEmail.length + unverified.length;
 
-// ── SAVE CONTACT (from Chrome Extension) ─────────────────────────────────────
-app.post("/save-contact", async (req, res) => {
-  const { name, title, email, linkedin, company, domain, country, source } = req.body;
-  if (!name && !email) return res.status(400).json({ error: "No data" });
-  try {
-    const nameParts = (name || "").split(" ");
-    const row = {
-      company_name:    company  || null,
-      company_website: domain   || null,
-      contact_name:    name     || email?.split("@")[0] || "",
-      first_name:      nameParts[0] || null,
-      last_name:       nameParts.slice(1).join(" ") || null,
-      job_title:       title    || null,
-      email_1:         email    || null,
-      email_revealed:  !!email,
-      linkedin_url:    linkedin || null,
-      country:         country  || "unknown",
-      source:          source   || "extension",
-      status:          "new",
-      created_at:      new Date().toISOString()
-    };
-    const conflict = email ? "email_1" : linkedin ? "linkedin_url" : null;
-    if (conflict) {
-      await supabase.from("contacts").upsert(row, { onConflict: conflict, ignoreDuplicates: true });
+  if (!total) { alert(`All ${alreadyVerified} emails already verified!`); return; }
+  if (!confirm(`Find & verify emails for:\n• ${noEmail.length} people with no email\n• ${unverified.length} people with unverified email\n\n(${alreadyVerified} already verified — skipping)\n\nThis tries 9 email formats per person via SMTP (firstname.lastname, firstname, fl, all_initials, firstnamel, firstname.l, lastname, f.lastname, firstnamelastname).`)) return;
+
+  const banner = h('banner');
+  banner.classList.add('show');
+  banner.querySelector('.spinner').style.display = '';
+  h('bv').textContent = alreadyVerified;
+  h('bf').textContent = 0;
+  h('br').textContent = total;
+  h('bannerStatus').textContent = 'Starting...';
+
+  let v = alreadyVerified, f = 0, processed = 0;
+
+  // Process all people — patterns now handled by global generateCandidates()
+  function getPatterns(fullName, domain) {
+    const parts = (fullName||'').toLowerCase().replace(/[^a-z\s]/g,'').trim().split(/\s+/);
+    const first = parts[0]||'', last = parts[parts.length-1]||'';
+    if (!first || !last || first === last) return [`${first}@${domain}`];
+    return [
+      `${first}.${last}@${domain}`,
+      `${first}@${domain}`,
+      `${first[0]}${last}@${domain}`,
+      `${first[0]}.${last}@${domain}`,
+      `${last}.${first}@${domain}`,
+      `${first}${last[0]}@${domain}`,
+      `${last}@${domain}`,
+      `${first}${last}@${domain}`,
+    ];
+  }
+
+  async function processOne(p) {
+    const domain = await getDomain(p.company_name);
+    if (!domain) return null;
+
+    // Call backend which tries all patterns via SMTP
+    const data = await smtpVerify(p.full_name, domain);
+    return data;
+  }
+
+  // Process all people
+  const allToProcess = [...noEmail, ...unverified];
+
+  for (let i = 0; i < allToProcess.length; i++) {
+    const p = allToProcess[i];
+    processed++;
+    h('br').textContent = total - processed;
+    h('bannerStatus').textContent = `[${processed}/${total}] ${cleanName(p.full_name || 'Unknown')}`;
+    const pct = Math.round((processed / total) * 100);
+    h('bannerBar').style.width = pct + '%';
+
+    const domain = await getDomain(p.company_name);
+    if (!domain) { f++; h('bf').textContent = f; continue; }
+
+    // Update person name in monitor
+    h('bannerPerson').textContent = cleanName(p.full_name || 'Unknown');
+    h('formatDots').innerHTML = '';
+    h('bannerFormat').textContent = 'trying formats...';
+
+    const data = await smtpVerify(p.full_name, domain, (candidates, idx, verifiedIdx) => {
+      renderFormatDots(candidates, idx, verifiedIdx);
+      const label = FORMAT_LABELS[idx] || '';
+      const email = candidates[idx] || '';
+      h('bannerFormat').textContent = idx < candidates.length
+        ? `[${idx+1}/9] trying: ${email.split('@')[0]}`
+        : verifiedIdx !== null ? `✅ found: ${candidates[verifiedIdx]}` : '❌ none verified';
+    });
+    const tag = h('et-'+p.id);
+
+    if (data.success && data.method === 'smtp_verified') {
+      // SMTP verified!
+      v++; p.email_status = 'verified'; p.email = data.email;
+      h('bv').textContent = v;
+      await saveMail(p.id, data.email);
+      
+      // Update DOM
+      const cell = tag ? tag.parentElement : document.querySelector(`button[data-id="${p.id}"]`)?.parentElement;
+      if (cell) {
+        cell.innerHTML = `<div style="display:flex;flex-direction:column;gap:2px;">
+          <span class="etag etag-v" id="et-${p.id}">${data.email}</span>
+          <span style="font-size:9px;color:var(--green)">✅ Verified</span>
+        </div>`;
+      }
     } else {
-      await supabase.from("contacts").insert(row);
+      // SMTP failed — save best guess if no email yet
+      f++;
+      if (!p.email && data.email) {
+        p.email = data.email; p.email_status = 'failed';
+        await saveMail(p.id, data.email);
+        const cell = document.querySelector(`button[data-id="${p.id}"]`)?.parentElement;
+        if (cell) {
+          cell.innerHTML = `<div style="display:flex;flex-direction:column;gap:2px;">
+            <span class="etag etag-f" id="et-${p.id}">${data.email}</span>
+            <span style="font-size:9px;color:var(--yellow)">💡 Best guess</span>
+          </div>`;
+        }
+      } else if (tag) {
+        p.email_status = 'failed';
+        tag.className = 'etag etag-f';
+        const lbl = tag.nextElementSibling;
+        if (lbl) { lbl.style.color = 'var(--red)'; lbl.textContent = '❌ Not verified'; }
+      }
+      h('bf').textContent = f;
     }
-    res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+
+    await sleep(200);
+  }
+
+  const pct = Math.round((v / (v + f)) * 100) || 0;
+  h('bannerStatus').textContent = `Done! ✅ ${v} verified · 💡 ${f} best guess · ${pct}% accuracy`;
+  h('br').textContent = 0;
+  h('banner').querySelector('.spinner').style.display = 'none';
+  h('statEmail').textContent = allPeople.filter(p=>p.email).length;
+}
+
+// Keep individual guess for single person
+async function guessAllEmails() { findAndVerifyAll(); }
+async function verifyAllEmails() { findAndVerifyAll(); }
+
+function exportCSV() {
+  const f = filtered();
+  const headers = ['Full Name','Title','Company','Company LinkedIn','Website','Location','LinkedIn URL','Email','Source','Status'];
+  const rows = f.map(p => {
+    const co = coMap[p.company_name]||{};
+    return [
+      p.full_name||'', p.title||'', p.company_name||'',
+      co.linkedin_url||'', co.website||'', p.location||'',
+      p.linkedin_url||'', p.email||'',
+      p.source==='apollo'?'Apollo':'LinkedIn', p.status||''
+    ];
+  });
+  const csv = [headers,...rows].map(r=>r.map(c=>`"${(c||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8'});
+  const a = Object.assign(document.createElement('a'), {href:URL.createObjectURL(blob), download:`kishor-people-${new Date().toISOString().split('T')[0]}.csv`});
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+load().catch(e => { h('content').innerHTML = `<div class="empty">Error: ${e.message}</div>`; });
+</script>
+</body>
+</html>
