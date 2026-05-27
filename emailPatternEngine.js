@@ -1,26 +1,17 @@
 /**
- * Kishor Exports — Email Pattern Engine v2
- * 
- * Flow:
- * 1. Load pattern knowledge from training data (Denmark Excel)
- * 2. For a given company domain, check if pattern already known
- * 3. If unknown → use 1 Apollo credit to reveal 1 email → learn pattern
- * 4. Apply pattern to ALL people in company
- * 5. SMTP verify all guessed emails
- * 6. Hard limit: max 10 Apollo credits per run (configurable)
- * 
- * Accuracy on Denmark training data:
- *   - 83% of people reachable via standard patterns
- *   - SMTP verify confirms each guess — wrong guesses don't get sent
+ * Kishor Exports — Email Pattern Engine v2.1
+ * Fixed for actual Supabase people table structure:
+ * - columns: id, company_name, full_name, title, email, linkedin_url
+ * - NO company_domain column — domain extracted from existing emails
+ * - NO apollo_id column — use LinkedIn URL for Apollo lookup
  */
 
 const axios = require('axios');
 require('dotenv').config();
 
-// ─── CONFIG ──────────────────────────────────────────────────────────────────
-const APOLLO_API_KEY   = process.env.APOLLO_API_KEY;
-const SUPABASE_URL     = process.env.SUPABASE_URL;
-const SUPABASE_KEY     = process.env.SUPABASE_SERVICE_KEY;
+const APOLLO_API_KEY    = process.env.APOLLO_API_KEY;
+const SUPABASE_URL      = process.env.SUPABASE_URL;
+const SUPABASE_KEY      = process.env.SUPABASE_SERVICE_KEY;
 const SMTP_VERIFIER_URL = process.env.SMTP_VERIFIER_URL || 'https://kishor-lead-engine.onrender.com/verify-email';
 const MAX_APOLLO_CREDITS = parseInt(process.env.MAX_APOLLO_CREDITS) || 10;
 
@@ -37,12 +28,12 @@ function splitCamelCase(s) {
 }
 
 function getNameParts(fullName) {
-  const parts     = fullName.trim().split(/[\s\-]+/).filter(Boolean);
-  const allParts  = parts.flatMap(p => splitCamelCase(p));
-  const first     = normalizeName(parts[0] || '');
-  const last      = normalizeName(parts[parts.length - 1] || '');
-  const f         = first[0] || '';
-  const initials  = parts.map(p => normalizeName(p)[0]).join('');
+  const parts        = fullName.trim().split(/[\s\-]+/).filter(Boolean);
+  const allParts     = parts.flatMap(p => splitCamelCase(p));
+  const first        = normalizeName(parts[0] || '');
+  const last         = normalizeName(parts[parts.length - 1] || '');
+  const f            = first[0] || '';
+  const initials     = parts.map(p => normalizeName(p)[0]).join('');
   const initials_camel = allParts.map(p => normalizeName(p)[0]).join('');
   return { first, last, f, initials, initials_camel };
 }
@@ -65,7 +56,6 @@ function getCandidates(first, last, f, initials, initials_camel) {
   ];
 }
 
-// ─── PATTERN DETECTOR ────────────────────────────────────────────────────────
 function detectPattern(fullName, localPart) {
   const { first, last, f, initials, initials_camel } = getNameParts(fullName);
   const local = normalizeName(localPart);
@@ -75,7 +65,6 @@ function detectPattern(fullName, localPart) {
   return null;
 }
 
-// ─── APPLY PATTERN ───────────────────────────────────────────────────────────
 function applyPattern(fullName, pattern, domain) {
   const { first, last, f, initials, initials_camel } = getNameParts(fullName);
   const map = {};
@@ -87,46 +76,36 @@ function applyPattern(fullName, pattern, domain) {
   return `${local}@${domain}`;
 }
 
-// ─── LEARN PATTERNS FROM TRAINING DATA ───────────────────────────────────────
+function getDomain(email) {
+  return email && email.includes('@') ? email.split('@')[1].toLowerCase() : null;
+}
+
+// ─── PATTERN LEARNER ─────────────────────────────────────────────────────────
 function learnPatternsFromTrainingData(trainingData) {
   const patternDB = {};
-
   for (const [domain, entries] of Object.entries(trainingData)) {
     if (entries.length < 2) continue;
-
-    const detected = entries
-      .map(e => detectPattern(e.name, e.local))
-      .filter(Boolean);
-
+    const detected = entries.map(e => detectPattern(e.name, e.local)).filter(Boolean);
     if (!detected.length) continue;
-
-    const counts = detected.reduce((acc, p) => {
-      acc[p] = (acc[p] || 0) + 1; return acc;
-    }, {});
-
-    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    const [topPattern, topCount] = sorted[0];
-    const confidence = Math.round((topCount / detected.length) * 100);
-
+    const counts = detected.reduce((acc, p) => { acc[p]=(acc[p]||0)+1; return acc; }, {});
+    const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     patternDB[domain] = {
-      pattern:      topPattern,
-      confidence,
-      source_count: topCount,
+      pattern:      sorted[0][0],
+      confidence:   Math.round(sorted[0][1]/detected.length*100),
+      source_count: sorted[0][1],
       total_people: entries.length,
-      all_patterns: counts,
-      mixed: sorted.length > 1 && sorted[1][1] / detected.length > 0.15
+      mixed:        sorted.length > 1 && sorted[1][1]/detected.length > 0.15
     };
   }
-
   return patternDB;
 }
 
-// ─── APOLLO: REVEAL 1 EMAIL ───────────────────────────────────────────────────
-async function revealOneEmailFromApollo(personId) {
+// ─── APOLLO REVEAL ───────────────────────────────────────────────────────────
+async function revealEmailFromApollo(linkedinUrl) {
   try {
     const res = await axios.post(
       'https://api.apollo.io/api/v1/people/match',
-      { id: personId, reveal_personal_emails: false },
+      { linkedin_url: linkedinUrl, reveal_personal_emails: false },
       { headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_API_KEY } }
     );
     return res.data?.person?.email || null;
@@ -139,16 +118,12 @@ async function revealOneEmailFromApollo(personId) {
 // ─── SMTP VERIFY ─────────────────────────────────────────────────────────────
 async function smtpVerify(email) {
   try {
-    const res = await axios.get(SMTP_VERIFIER_URL, {
-      params: { email }, timeout: 15000
-    });
+    const res = await axios.get(SMTP_VERIFIER_URL, { params: { email }, timeout: 15000 });
     return res.data?.valid === true || res.data?.result === 'valid';
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-// ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
+// ─── SUPABASE ────────────────────────────────────────────────────────────────
 async function supabaseGet(path, params) {
   const res = await axios.get(`${SUPABASE_URL}/rest/v1/${path}`, {
     params,
@@ -168,24 +143,6 @@ async function supabasePatch(path, data) {
   });
 }
 
-async function getPeopleWithoutEmails(domain, limit = 50) {
-  return supabaseGet('people', {
-    company_domain: `eq.${domain}`,
-    email: 'is.null',
-    select: 'id,full_name,apollo_id,company_domain',
-    limit
-  });
-}
-
-async function getPeopleWithEmails(domain) {
-  return supabaseGet('people', {
-    company_domain: `eq.${domain}`,
-    email: 'not.is.null',
-    select: 'full_name,email',
-    limit: 20
-  });
-}
-
 // ─── MAIN ENGINE ─────────────────────────────────────────────────────────────
 async function runPatternEngine(options = {}) {
   const {
@@ -196,132 +153,151 @@ async function runPatternEngine(options = {}) {
   } = options;
 
   console.log('='.repeat(60));
-  console.log('  KISHOR EMAIL PATTERN ENGINE v2');
-  console.log(`  Max Apollo Credits: ${maxCredits}`);
-  console.log(`  Dry Run: ${dryRun}`);
+  console.log('  KISHOR EMAIL PATTERN ENGINE v2.1');
+  console.log(`  Max Apollo Credits: ${maxCredits} | Dry Run: ${dryRun}`);
   console.log('='.repeat(60));
 
-  // Load training data
-  const trainingData   = require(trainingDataPath);
-  const patternDB      = learnPatternsFromTrainingData(trainingData);
-  const highConf       = Object.values(patternDB).filter(p => p.confidence >= 80).length;
+  // Load training patterns
+  const trainingData = require(trainingDataPath);
+  const patternDB    = learnPatternsFromTrainingData(trainingData);
   console.log(`\n✅ Patterns learned: ${Object.keys(patternDB).length} domains`);
-  console.log(`   High confidence (80%+): ${highConf}`);
 
-  // Get domains to process
-  let domains = domainsToProcess;
-  if (!domains) {
-    const rows = await supabaseGet('people', {
-      email: 'is.null', select: 'company_domain', limit: 1000
-    });
-    domains = [...new Set(rows.map(r => r.company_domain).filter(Boolean))];
+  // Step 1: Get all people WITH emails from Supabase
+  // Group by domain → this tells us which domains have known patterns
+  console.log('\n📥 Loading people with emails from Supabase...');
+  const withEmails = await supabaseGet('people', {
+    email: 'not.is.null',
+    select: 'id,full_name,email,company_name',
+    limit: 5000
+  });
+
+  // Build domain → people map from Supabase
+  const supabasePatterns = {};
+  for (const p of withEmails) {
+    const domain = getDomain(p.email);
+    if (!domain) continue;
+    if (!supabasePatterns[domain]) supabasePatterns[domain] = [];
+    supabasePatterns[domain].push(p);
   }
-  console.log(`\n📋 Domains with missing emails: ${domains.length}\n`);
+  console.log(`   Found ${Object.keys(supabasePatterns).length} domains with known emails`);
+
+  // Step 2: Learn patterns from Supabase emails
+  const livePatternDB = {};
+  for (const [domain, people] of Object.entries(supabasePatterns)) {
+    if (people.length < 1) continue;
+    const detected = people
+      .map(p => detectPattern(p.full_name, p.email.split('@')[0]))
+      .filter(Boolean);
+    if (!detected.length) continue;
+    const counts = detected.reduce((a,p)=>{ a[p]=(a[p]||0)+1; return a; }, {});
+    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+    livePatternDB[domain] = {
+      pattern:    top[0],
+      confidence: Math.round(top[1]/detected.length*100),
+      source:     'supabase',
+      count:      top[1]
+    };
+  }
+  console.log(`   Patterns from Supabase emails: ${Object.keys(livePatternDB).length}`);
+
+  // Step 3: Get all people WITHOUT emails
+  const withoutEmails = await supabaseGet('people', {
+    email: 'is.null',
+    select: 'id,full_name,linkedin_url,company_name',
+    limit: 2000
+  });
+  console.log(`\n👥 People without emails: ${withoutEmails.length}`);
+
+  if (withoutEmails.length === 0) {
+    console.log('✅ Everyone already has an email! Nothing to do.');
+    return { creditsUsed: 0, emailsGenerated: 0, emailsVerified: 0 };
+  }
+
+  // Group people without emails by company_name
+  const byCompany = {};
+  for (const p of withoutEmails) {
+    const key = p.company_name || 'unknown';
+    if (!byCompany[key]) byCompany[key] = [];
+    byCompany[key].push(p);
+  }
+  console.log(`   Across ${Object.keys(byCompany).length} companies\n`);
 
   // Counters
-  let creditsUsed = 0, emailsGenerated = 0, emailsVerified = 0;
-  let patternsFromTraining = 0, patternsFromApollo = 0, skipped = 0;
+  let creditsUsed=0, emailsGenerated=0, emailsVerified=0, skipped=0;
 
-  for (const domain of domains) {
+  // Step 4: For each company, find pattern and apply
+  for (const [companyName, people] of Object.entries(byCompany)) {
 
-    // ── CREDIT GUARD ──
+    // CREDIT GUARD
     if (creditsUsed >= maxCredits) {
       console.log(`\n⛔ CREDIT LIMIT HIT (${maxCredits}). Stopping safely.`);
-      console.log(`   Remaining domains will be processed next run.`);
       break;
     }
 
-    console.log(`\n── ${domain} ──`);
+    console.log(`\n── ${companyName} (${people.length} people need emails) ──`);
 
-    // Step 1: Check training data first
+    // Find pattern for this company
+    // First: check if any person in this company already has email → get domain
+    const knownPerson = withEmails.find(p => p.company_name === companyName);
+    let domain = knownPerson ? getDomain(knownPerson.email) : null;
     let patternInfo = null;
-    const trained = patternDB[domain];
 
-    if (trained && trained.confidence >= 70) {
-      patternInfo = trained;
-      patternsFromTraining++;
-      console.log(`   📚 Training pattern: ${patternInfo.pattern} (${patternInfo.confidence}%)`);
-    } else {
-      // Step 2: Check existing emails in Supabase
-      const existing = await getPeopleWithEmails(domain);
-      if (existing.length > 0) {
-        const detected = existing
-          .map(p => detectPattern(p.full_name, p.email.split('@')[0]))
-          .filter(Boolean);
-        if (detected.length > 0) {
-          const counts = detected.reduce((a,p)=>{ a[p]=(a[p]||0)+1; return a; }, {});
-          const top = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
-          patternInfo = { pattern: top[0], confidence: Math.round(top[1]/detected.length*100), source_count: top[1] };
-          patternsFromTraining++;
-          console.log(`   🗄️  Supabase pattern: ${patternInfo.pattern} (${patternInfo.confidence}%)`);
-        }
+    if (domain) {
+      // Check live patterns from Supabase first
+      if (livePatternDB[domain] && livePatternDB[domain].confidence >= 70) {
+        patternInfo = livePatternDB[domain];
+        console.log(`   🗄️  Pattern from Supabase: ${patternInfo.pattern} (${patternInfo.confidence}%)`);
       }
-
-      // Step 3: Use Apollo credit to reveal 1 email
-      if (!patternInfo || patternInfo.confidence < 70) {
-        console.log(`   💳 Using Apollo credit ${creditsUsed + 1}/${maxCredits}...`);
-
-        const people = await getPeopleWithoutEmails(domain, 10);
-        const target = people.find(p => p.apollo_id);
-
-        if (!target) {
-          console.log(`   ⚠️  No apollo_id found. Skipping.`);
-          skipped++;
-          continue;
-        }
-
-        const revealed = await revealOneEmailFromApollo(target.apollo_id);
-        creditsUsed++;
-
-        if (!revealed) {
-          console.log(`   ❌ Apollo returned no email. Credits used: ${creditsUsed}/${maxCredits}`);
-          skipped++;
-          continue;
-        }
-
-        const revealedLocal = revealed.split('@')[0];
-        const p = detectPattern(target.full_name, revealedLocal);
-        console.log(`   📧 Revealed: ${revealed} → Pattern: ${p || 'custom'}`);
-
-        // Save revealed email regardless
-        if (!dryRun) {
-          await supabasePatch(`people?id=eq.${target.id}`, {
-            email: revealed, email_status: 'revealed', pattern_used: p || 'custom'
-          });
-          emailsGenerated++;
-        }
-
-        if (!p) {
-          console.log(`   ⚠️  Custom pattern. Saving revealed email only.`);
-          skipped++;
-          continue;
-        }
-
-        patternInfo = { pattern: p, confidence: 100, source_count: 1 };
-        patternsFromApollo++;
+      // Fallback to training data
+      if (!patternInfo && patternDB[domain] && patternDB[domain].confidence >= 70) {
+        patternInfo = patternDB[domain];
+        console.log(`   📚 Pattern from training: ${patternInfo.pattern} (${patternInfo.confidence}%)`);
       }
     }
 
-    // Save pattern to companies table
-    if (!dryRun && patternInfo) {
-      await supabasePatch(`companies?domain=eq.${domain}`, {
-        email_pattern: patternInfo.pattern,
-        pattern_confidence: patternInfo.confidence,
-        pattern_source_count: patternInfo.source_count
-      });
+    // No domain known → try Apollo credit to reveal 1 email
+    if (!patternInfo) {
+      const target = people.find(p => p.linkedin_url);
+      if (!target) {
+        console.log(`   ⚠️  No LinkedIn URL and no known email domain. Skipping.`);
+        skipped++;
+        continue;
+      }
+
+      console.log(`   💳 Using Apollo credit ${creditsUsed+1}/${maxCredits}...`);
+      const revealed = await revealEmailFromApollo(target.linkedin_url);
+      creditsUsed++;
+
+      if (!revealed) {
+        console.log(`   ❌ Apollo returned no email.`);
+        skipped++;
+        continue;
+      }
+
+      domain = getDomain(revealed);
+      const local = revealed.split('@')[0];
+      const p = detectPattern(target.full_name, local);
+      console.log(`   📧 Revealed: ${revealed} → Pattern: ${p || 'custom'}`);
+
+      if (!dryRun) {
+        await supabasePatch(`people?id=eq.${target.id}`, { email: revealed });
+        emailsGenerated++;
+      }
+
+      if (!p || !domain) { skipped++; continue; }
+      patternInfo = { pattern: p, confidence: 100 };
     }
 
-    if (patternInfo.confidence < 70) {
-      console.log(`   ⚠️  Low confidence (${patternInfo.confidence}%). Skipping guessing.`);
+    if (!domain || patternInfo.confidence < 70) {
+      console.log(`   ⚠️  Skipping — no domain or low confidence.`);
       skipped++;
       continue;
     }
 
-    // Step 4: Apply pattern to everyone without email
-    const needEmails = await getPeopleWithoutEmails(domain, 50);
-    console.log(`   👥 Generating emails for ${needEmails.length} people...`);
+    // Apply pattern to all people in this company without emails
+    console.log(`   🎯 Pattern: ${patternInfo.pattern} → applying to ${people.length} people...`);
 
-    for (const person of needEmails) {
+    for (const person of people) {
       const guessed = applyPattern(person.full_name, patternInfo.pattern, domain);
       if (!guessed) {
         console.log(`   ⚠️  Cannot apply to: ${person.full_name}`);
@@ -330,19 +306,15 @@ async function runPatternEngine(options = {}) {
 
       process.stdout.write(`   📨 ${guessed} → `);
       const valid = await smtpVerify(guessed);
-      console.log(valid ? '✅ verified' : '❌ unverified');
+      console.log(valid ? '✅ verified' : '❌ invalid');
 
       if (!dryRun) {
-        await supabasePatch(`people?id=eq.${person.id}`, {
-          email: guessed,
-          email_status: valid ? 'verified' : 'guessed_unverified',
-          pattern_used: patternInfo.pattern
-        });
+        await supabasePatch(`people?id=eq.${person.id}`, { email: guessed });
       }
 
       emailsGenerated++;
       if (valid) emailsVerified++;
-      await new Promise(r => setTimeout(r, 300)); // rate limit
+      await new Promise(r => setTimeout(r, 300));
     }
   }
 
@@ -350,37 +322,29 @@ async function runPatternEngine(options = {}) {
   console.log('\n' + '='.repeat(60));
   console.log('  RUN COMPLETE');
   console.log('='.repeat(60));
-  console.log(`  Apollo credits used:       ${creditsUsed} / ${maxCredits}`);
-  console.log(`  Credits remaining:         ${maxCredits - creditsUsed}`);
-  console.log(`  Patterns from training:    ${patternsFromTraining}`);
-  console.log(`  Patterns from Apollo:      ${patternsFromApollo}`);
-  console.log(`  Emails generated:          ${emailsGenerated}`);
-  console.log(`  Emails SMTP verified ✅:   ${emailsVerified}`);
-  console.log(`  Domains skipped:           ${skipped}`);
+  console.log(`  Apollo credits used:    ${creditsUsed} / ${maxCredits}`);
+  console.log(`  Emails generated:       ${emailsGenerated}`);
+  console.log(`  Emails verified ✅:     ${emailsVerified}`);
+  console.log(`  Companies skipped:      ${skipped}`);
   console.log('='.repeat(60));
 
   return { creditsUsed, emailsGenerated, emailsVerified };
 }
 
-// ─── LOCAL TEST (no API needed) ───────────────────────────────────────────────
+// ─── LOCAL TEST ───────────────────────────────────────────────────────────────
 function testLocally(trainingDataPath = './training_data.json') {
   const trainingData = require(trainingDataPath);
   const patternDB    = learnPatternsFromTrainingData(trainingData);
-
   let correct=0, total=0, reachable=0;
 
   for (const [domain, entries] of Object.entries(trainingData)) {
     const info = patternDB[domain];
     if (!info || info.confidence < 70) continue;
-
     for (const entry of entries) {
-      // Check if ANY pattern matches (reachable)
       const { first, last, f, initials, initials_camel } = getNameParts(entry.name);
       const localNorm = normalizeName(entry.local);
-      const allVals = getCandidates(first, last, f, initials, initials_camel).map(c=>c.value);
+      const allVals = getCandidates(first,last,f,initials,initials_camel).map(c=>c.value);
       if (allVals.includes(localNorm)) reachable++;
-
-      // Check if TOP pattern matches (accuracy)
       const guessed = applyPattern(entry.name, info.pattern, domain);
       total++;
       if (guessed === entry.email) correct++;
@@ -388,46 +352,29 @@ function testLocally(trainingDataPath = './training_data.json') {
   }
 
   console.log('\n=== LOCAL ACCURACY TEST ===');
-  console.log(`Top-pattern accuracy:  ${correct}/${total} = ${Math.round(correct/total*100)}%`);
+  console.log(`Top-pattern accuracy:      ${correct}/${total} = ${Math.round(correct/total*100)}%`);
   console.log(`Reachable via any pattern: ${reachable}/${total} = ${Math.round(reachable/total*100)}%`);
-  console.log(`(SMTP verify catches wrong guesses — real success rate is higher)`);
-
   const dist = {};
-  for (const info of Object.values(patternDB)) {
-    dist[info.pattern] = (dist[info.pattern]||0)+1;
-  }
+  for (const info of Object.values(patternDB)) { dist[info.pattern]=(dist[info.pattern]||0)+1; }
   console.log('\nPattern Distribution:');
-  Object.entries(dist).sort((a,b)=>b[1]-a[1]).forEach(([p,c]) => {
-    console.log(`  ${p}: ${c} companies`);
-  });
+  Object.entries(dist).sort((a,b)=>b[1]-a[1]).forEach(([p,c]) => console.log(`  ${p}: ${c} companies`));
+  return Math.round(correct/total*100);
 }
 
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
-module.exports = {
-  runPatternEngine, testLocally,
-  learnPatternsFromTrainingData, detectPattern, applyPattern, normalizeName
-};
+module.exports = { runPatternEngine, testLocally, learnPatternsFromTrainingData, detectPattern, applyPattern, normalizeName };
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 if (require.main === module) {
   const [cmd, arg] = process.argv.slice(2);
   const credits = parseInt(arg) || 10;
-
   if (cmd === 'test') {
     testLocally('./training_data.json');
   } else if (cmd === 'dryrun') {
-    runPatternEngine({ maxCredits: credits, dryRun: true })
-      .then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
+    runPatternEngine({ maxCredits: credits, dryRun: true }).then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1);});
   } else if (cmd === 'run') {
-    runPatternEngine({ maxCredits: credits, dryRun: false })
-      .then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
+    runPatternEngine({ maxCredits: credits, dryRun: false }).then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1);});
   } else {
-    console.log(`
-Usage:
-  node emailPatternEngine.js test          — Test accuracy locally (no API)
-  node emailPatternEngine.js dryrun 10     — Dry run, max 10 credits
-  node emailPatternEngine.js run 10        — Live run, max 10 credits
-  node emailPatternEngine.js run 15        — Live run, max 15 credits
-    `);
+    console.log('Usage: node emailPatternEngine.js test | dryrun 10 | run 10');
   }
 }
