@@ -379,6 +379,73 @@ app.post("/verify-email", async (req, res) => {
   }
 });
 
+// ── APOLLO SCRAPE COMPANY ─────────────────────────────────────────────────────
+app.post("/apollo-scrape-company", async (req, res) => {
+  const { company_name, domain } = req.body;
+  if (!company_name && !domain) return res.status(400).json({ error: "company_name or domain required" });
+
+  try {
+    const APOLLO_KEY = process.env.APOLLO_API_KEY;
+    if (!APOLLO_KEY) return res.status(500).json({ error: "APOLLO_API_KEY not set" });
+
+    // Search Apollo for people at this company
+    const body = {
+      api_key: APOLLO_KEY,
+      q_organization_domains: domain ? [domain] : [],
+      q_organization_name: company_name,
+      person_titles: [
+        "buyer", "buying manager", "head of buying",
+        "sourcing manager", "head of sourcing",
+        "procurement manager", "purchasing manager",
+        "merchandising manager", "merchandise manager",
+        "ceo", "owner", "managing director", "director",
+        "brand manager", "sales manager", "product manager"
+      ],
+      page: 1,
+      per_page: 10
+    };
+
+    const r = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    const data = await r.json();
+    const people = data.people || [];
+
+    if (!people.length) return res.json({ found: 0, message: "No people found on Apollo" });
+
+    // Save to Supabase — WITHOUT email/phone (hidden)
+    let saved = 0;
+    for (const p of people) {
+      const fullName = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+      if (!fullName) continue;
+
+      const row = {
+        company_name: company_name,
+        company_id: null,
+        full_name: fullName,
+        title: p.title || null,
+        linkedin_url: p.linkedin_url || null,
+        location: p.city ? `${p.city}, ${p.country}` : (p.country || null),
+        source: 'apollo',
+        // NOTE: email and phone intentionally NOT saved here
+        // Use "Reveal" button in CRM to fetch when needed
+      };
+
+      const { error } = await supabase.from("people")
+        .upsert(row, { onConflict: 'linkedin_url', ignoreDuplicates: true });
+
+      if (!error) saved++;
+    }
+
+    res.json({ found: saved, total_apollo: people.length, company: company_name });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── CRM ───────────────────────────────────────────────────────────────────────
 const path = require('path');
 app.get('/crm', (req, res) => {
