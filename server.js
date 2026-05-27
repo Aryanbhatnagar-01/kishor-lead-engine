@@ -389,18 +389,11 @@ app.post("/apollo-scrape-company", async (req, res) => {
     if (!APOLLO_KEY) return res.status(500).json({ error: "APOLLO_API_KEY not set" });
 
     // Search Apollo for people at this company
+    // Try with domain first, then fallback to name only
     const body = {
       api_key: APOLLO_KEY,
       q_organization_domains: domain ? [domain] : [],
-      q_organization_name: company_name,
-      person_titles: [
-        "buyer", "buying manager", "head of buying",
-        "sourcing manager", "head of sourcing",
-        "procurement manager", "purchasing manager",
-        "merchandising manager", "merchandise manager",
-        "ceo", "owner", "managing director", "director",
-        "brand manager", "sales manager", "product manager"
-      ],
+      q_organization_name: domain ? undefined : company_name,
       page: 1,
       per_page: 10
     };
