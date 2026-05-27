@@ -389,23 +389,32 @@ app.post("/apollo-scrape-company", async (req, res) => {
     if (!APOLLO_KEY) return res.status(500).json({ error: "APOLLO_API_KEY not set" });
 
     // Search Apollo for people at this company
-    // Try with domain first, then fallback to name only
-    const body = {
-      api_key: APOLLO_KEY,
-      q_organization_domains: domain ? [domain] : [],
-      q_organization_name: domain ? undefined : company_name,
-      page: 1,
-      per_page: 10
-    };
+    // Search by domain first, fallback to name
+    let people = [];
 
-    const r = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+    // Attempt 1: search by domain
+    if (domain) {
+      const r1 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": APOLLO_KEY },
+        body: JSON.stringify({ q_organization_domains: [domain], per_page: 10 })
+      });
+      const d1 = await r1.json();
+      people = d1.people || [];
+    }
 
-    const data = await r.json();
-    const people = data.people || [];
+    // Attempt 2: fallback to company name search
+    if (!people.length) {
+      const r2 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": APOLLO_KEY },
+        body: JSON.stringify({ q_organization_name: company_name, per_page: 10 })
+      });
+      const d2 = await r2.json();
+      people = d2.people || [];
+    }
+
+    // people fetched above via domain + name fallback
 
     if (!people.length) return res.json({ found: 0, message: "No people found on Apollo" });
 
