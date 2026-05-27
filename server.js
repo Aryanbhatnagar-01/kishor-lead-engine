@@ -292,15 +292,15 @@ function generateCandidates(fullName, domain) {
   const f = first[0], l = last[0];
   const allInitials = parts.map(p => p[0]).join('');
   const raw = [
-    `${first}.${last}`,   // 1. firstname.lastname  (548 in DK data)
-    `${first}`,           // 2. firstname            (1116)
-    `${f}${l}`,           // 3. fl initials          (647)
-    allInitials,          // 4. all initials         (284)
-    `${first}${l}`,       // 5. firstnamel           (30)
-    `${first}.${l}`,      // 6. firstname.l          (24)
-    `${last}`,            // 7. lastname             (14)
-    `${f}.${last}`,       // 8. f.lastname           (12)
-    `${first}${last}`,    // 9. firstnamelastname    (12)
+    `${first}.${last}`,
+    `${first}`,
+    `${f}${l}`,
+    allInitials,
+    `${first}${l}`,
+    `${first}.${l}`,
+    `${last}`,
+    `${f}.${last}`,
+    `${first}${last}`,
   ];
   const seen = new Set();
   return raw
@@ -349,8 +349,6 @@ async function smtpCheck(email) {
 }
 
 // ── SMTP EMAIL VERIFIER ───────────────────────────────────────────────────────
-
-// GET /verify-email?email=john@ganni.com  ← used by new CRM
 app.get("/verify-email", async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: "email query param required" });
@@ -362,7 +360,6 @@ app.get("/verify-email", async (req, res) => {
   }
 });
 
-// POST /verify-email { full_name, domain }  ← used by old CRM / guessOne button
 app.post("/verify-email", async (req, res) => {
   const { full_name, domain } = req.body;
   if (!full_name || !domain) return res.status(400).json({ error: "full_name and domain required" });
@@ -388,11 +385,8 @@ app.post("/apollo-scrape-company", async (req, res) => {
     const APOLLO_KEY = process.env.APOLLO_API_KEY;
     if (!APOLLO_KEY) return res.status(500).json({ error: "APOLLO_API_KEY not set" });
 
-    // Search Apollo for people at this company
-    // Search by domain first, fallback to name
     let people = [];
 
-    // Attempt 1: search by domain
     if (domain) {
       const r1 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
         method: "POST",
@@ -403,7 +397,6 @@ app.post("/apollo-scrape-company", async (req, res) => {
       people = d1.people || [];
     }
 
-    // Attempt 2: fallback to company name search
     if (!people.length) {
       const r2 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
         method: "POST",
@@ -414,11 +407,8 @@ app.post("/apollo-scrape-company", async (req, res) => {
       people = d2.people || [];
     }
 
-    // people fetched above via domain + name fallback
-
     if (!people.length) return res.json({ found: 0, message: "No people found on Apollo" });
 
-    // Save to Supabase — WITHOUT email/phone (hidden)
     let saved = 0;
     for (const p of people) {
       const fullName = `${p.first_name || ''} ${p.last_name || ''}`.trim();
@@ -432,8 +422,6 @@ app.post("/apollo-scrape-company", async (req, res) => {
         linkedin_url: p.linkedin_url || null,
         location: p.city ? `${p.city}, ${p.country}` : (p.country || null),
         source: 'apollo',
-        // NOTE: email and phone intentionally NOT saved here
-        // Use "Reveal" button in CRM to fetch when needed
       };
 
       const { error } = await supabase.from("people")
@@ -448,6 +436,51 @@ app.post("/apollo-scrape-company", async (req, res) => {
   }
 });
 
+// ── EMAIL PATTERN ENGINE ──────────────────────────────────────────────────────
+// Test endpoint — no API calls, just checks pattern accuracy on training data
+app.get("/pattern-test", async (req, res) => {
+  try {
+    const { testLocally } = require('./emailPatternEngine');
+    addLog("Pattern engine test started...");
+    const accuracy = testLocally('./training_data.json');
+    res.json({
+      success: true,
+      accuracy_pct: accuracy,
+      message: "Check /status logs for full breakdown"
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Dry run — shows what it WOULD do, uses 0 Apollo credits, saves nothing
+app.get("/pattern-dryrun", async (req, res) => {
+  const maxCredits = Math.min(parseInt(req.query.credits) || 10, 15);
+  try {
+    const { runPatternEngine } = require('./emailPatternEngine');
+    addLog(`Pattern engine DRY RUN started — max credits: ${maxCredits}`);
+    res.json({ message: "Dry run started. Check /status for logs.", maxCredits });
+    await runPatternEngine({ maxCredits, dryRun: true, trainingDataPath: './training_data.json' });
+    addLog("Dry run complete.");
+  } catch (e) {
+    addLog("Pattern engine error: " + e.message);
+  }
+});
+
+// Live run — uses Apollo credits (max 15 hard limit), saves to Supabase
+app.get("/pattern-run", async (req, res) => {
+  const maxCredits = Math.min(parseInt(req.query.credits) || 10, 15);
+  try {
+    const { runPatternEngine } = require('./emailPatternEngine');
+    addLog(`Pattern engine LIVE RUN started — max credits: ${maxCredits}`);
+    res.json({ message: "Pattern engine started. Check /status for live logs.", maxCredits });
+    const result = await runPatternEngine({ maxCredits, dryRun: false, trainingDataPath: './training_data.json' });
+    addLog(`Pattern engine done. Credits used: ${result.creditsUsed}. Emails: ${result.emailsGenerated}. Verified: ${result.emailsVerified}`);
+  } catch (e) {
+    addLog("Pattern engine error: " + e.message);
+  }
+});
+
 // ── CRM ───────────────────────────────────────────────────────────────────────
 const path = require('path');
 app.get('/crm', (req, res) => {
@@ -457,28 +490,28 @@ app.get('/crm', (req, res) => {
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v7.3 — CRM Hosted + 9-Format SMTP Verifier",
+    status: "Kishor Lead Engine v7.4 — Pattern Engine Added",
     endpoints: {
       "POST /search":                    "Search by country (uses Hunter API)",
       "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
-      "GET /status":                     "Check progress",
+      "GET /status":                     "Check progress + logs",
       "POST /stop":                      "Stop current job",
       "GET /companies":                  "All companies",
       "GET /contacts":                   "All contacts",
       "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "GET /verify-email?email=xxx":     "SMTP verify single email (free!)",
+      "GET /verify-email?email=xxx":     "SMTP verify single email (free)",
       "GET /crm":                        "People CRM dashboard",
-      "POST /verify-email":              "SMTP verify by name+domain (free!)",
       "GET /credits":                    "Check Hunter credits",
-      "GET /test-hunter":                "Test Hunter API",
-      "GET /test-companies":             "Test 5 Danish companies",
-      "GET /stats":                      "DB counts"
+      "GET /stats":                      "DB counts",
+      "GET /pattern-test":               "Test pattern accuracy (no API)",
+      "GET /pattern-dryrun?credits=10":  "Dry run pattern engine (no saves)",
+      "GET /pattern-run?credits=10":     "LIVE run — max 10 Apollo credits"
     }
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.3 running on port " + PORT));
+app.listen(PORT, () => console.log("Kishor Lead Engine v7.4 running on port " + PORT));
 
 // ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
 app.post("/save-company", async (req, res) => {
