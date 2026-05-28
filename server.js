@@ -1,568 +1,350 @@
-const express = require("express");
-const { exec } = require("child_process");
-const { createClient } = require("@supabase/supabase-js");
-const cors = require("cors");
+/**
+ * Kishor Lead Engine — server.js v8.0
+ * Full 4-agent pipeline wired together
+ * User enters country → all 4 agents run → verified contacts ready
+ */
+
+const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
+const cors = require('cors');
+const path = require('path');
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname)));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-const SALESHANDY_API_KEY = process.env.SALESHANDY_API_KEY;
-const SALESHANDY_BASE = "https://open-api.saleshandy.com/v1";
-const HUNTER_KEY = process.env.HUNTER_API_KEY;
-const HUNTER_BASE = "https://api.hunter.io/v2";
 
-let currentProcess = null;
-let isRunning = false;
-let progress = { step: "", pct: 0, log: [] };
+// ── AGENTS ────────────────────────────────────────────────────────────────
+const { runAgent1 } = require('./agent1-discovery');
+const { runAgent2 } = require('./agent2-matcher');
+const { runAgent3 } = require('./agent3-people');
+const { runAgent4, runNightlyLearning } = require('./agent4-email');
+
+// ── JOB STATE ─────────────────────────────────────────────────────────────
+let job = {
+  running:  false,
+  country:  null,
+  stage:    'idle',   // idle | agent1 | agent2 | agent3 | agent4 | done | error
+  pct:      0,
+  logs:     [],
+  results:  { agent1: null, agent2: null, agent3: null, agent4: null },
+  startedAt: null,
+  error:    null,
+};
 
 function addLog(msg) {
-  if (!msg || !msg.trim()) return;
-  progress.log.push(msg.trim());
-  if (progress.log.length > 100) progress.log.shift();
-  console.log(msg.trim());
+  const line = `[${new Date().toTimeString().slice(0,8)}] ${msg}`;
+  job.logs.push(line);
+  if (job.logs.length > 200) job.logs.shift();
+  console.log(line);
 }
 
-// ── STATS ─────────────────────────────────────────────────────────────────────
-app.get("/stats", async (req, res) => {
-  const [c, ct] = await Promise.all([
-    supabase.from("companies").select("*", { count: "exact", head: true }),
-    supabase.from("contacts").select("*", { count: "exact", head: true })
+function setStage(stage, pct) {
+  job.stage = stage;
+  job.pct   = pct;
+  addLog(`── Stage: ${stage} (${pct}%) ──`);
+}
+
+// ── PIPELINE RUNNER ────────────────────────────────────────────────────────
+async function runFullPipeline(country, options = {}) {
+  const { skipAgent1 = false, skipAgent2 = false, maxApolloCredits = 10 } = options;
+
+  job.running   = true;
+  job.country   = country;
+  job.stage     = 'starting';
+  job.pct       = 0;
+  job.logs      = [];
+  job.error     = null;
+  job.results   = { agent1: null, agent2: null, agent3: null, agent4: null };
+  job.startedAt = new Date().toISOString();
+
+  addLog(`🚀 Pipeline started for: ${country}`);
+  addLog(`Options: skipAgent1=${skipAgent1}, skipAgent2=${skipAgent2}, maxCredits=${maxApolloCredits}`);
+
+  try {
+    // ── AGENT 1: Find Companies ──────────────────────────────────────────
+    if (!skipAgent1) {
+      setStage('agent1', 5);
+      addLog('Agent 1: Searching for companies via Apollo + Google + Trade Shows...');
+      const r1 = await runAgent1(country, {
+        maxPages:   3,
+        onProgress: addLog,
+      });
+      job.results.agent1 = r1;
+      addLog(`✅ Agent 1 done: ${r1.totalSaved} companies saved`);
+    } else {
+      addLog('Agent 1: Skipped (using existing companies in DB)');
+    }
+
+    // ── AGENT 2: Score Websites ──────────────────────────────────────────
+    if (!skipAgent2) {
+      setStage('agent2', 25);
+      addLog('Agent 2: Scoring company websites with Gemini AI...');
+      const r2 = await runAgent2(country, {
+        limit:      300,
+        minScore:   50,
+        onProgress: addLog,
+      });
+      job.results.agent2 = r2;
+      addLog(`✅ Agent 2 done: ${r2.processed} scored | ${r2.highMatch} high | ${r2.mediumMatch} medium`);
+    } else {
+      addLog('Agent 2: Skipped (using existing match scores)');
+    }
+
+    // ── AGENT 3: Find People ─────────────────────────────────────────────
+    setStage('agent3', 55);
+    addLog('Agent 3: Finding decision makers via Apollo...');
+    const r3 = await runAgent3(country, {
+      minScore:   50,
+      limit:      200,
+      onProgress: addLog,
+    });
+    job.results.agent3 = r3;
+    addLog(`✅ Agent 3 done: ${r3.peopleSaved} people saved | ${r3.namesResolved} names resolved`);
+
+    // ── AGENT 4: Build Emails ────────────────────────────────────────────
+    setStage('agent4', 75);
+    addLog('Agent 4: Building and verifying emails...');
+    const r4 = await runAgent4(country, {
+      maxApolloCredits,
+      dryRun:     false,
+      onProgress: addLog,
+    });
+    job.results.agent4 = r4;
+    addLog(`✅ Agent 4 done: ${r4.emailsBuilt} emails | ${r4.verified} verified | ${r4.creditsUsed} credits used`);
+
+    // ── DONE ─────────────────────────────────────────────────────────────
+    setStage('done', 100);
+    addLog(`🎉 Pipeline complete for ${country}!`);
+    addLog(`Summary: Companies found, websites scored, people found, emails built and verified.`);
+    addLog(`Ready to export and send via Saleshandy.`);
+
+  } catch (e) {
+    job.stage = 'error';
+    job.error = e.message;
+    addLog(`❌ Pipeline error: ${e.message}`);
+    console.error(e);
+  } finally {
+    job.running = false;
+  }
+}
+
+// ── API ROUTES ────────────────────────────────────────────────────────────
+
+// Start full pipeline
+app.post('/run', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Pipeline already running. Stop it first.' });
+
+  const { country, skipAgent1, skipAgent2, maxApolloCredits } = req.body;
+  if (!country) return res.status(400).json({ error: 'country is required' });
+
+  // Run async — don't await
+  runFullPipeline(country, {
+    skipAgent1:      skipAgent1 || false,
+    skipAgent2:      skipAgent2 || false,
+    maxApolloCredits: maxApolloCredits || 10,
+  });
+
+  res.json({ message: `Pipeline started for ${country}`, country });
+});
+
+// Run individual agents
+app.post('/run/agent1', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Already running' });
+  const { country } = req.body;
+  if (!country) return res.status(400).json({ error: 'country required' });
+  job.running = true; job.stage = 'agent1'; job.logs = [];
+  runAgent1(country, { maxPages: 3, onProgress: addLog })
+    .then(r => { job.results.agent1 = r; job.running = false; job.stage = 'done'; addLog('Agent 1 done: ' + JSON.stringify(r)); })
+    .catch(e => { job.running = false; job.stage = 'error'; addLog('Error: ' + e.message); });
+  res.json({ message: 'Agent 1 started for ' + country });
+});
+
+app.post('/run/agent2', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Already running' });
+  const { country, limit } = req.body;
+  job.running = true; job.stage = 'agent2'; job.logs = [];
+  runAgent2(country, { limit: limit || 200, onProgress: addLog })
+    .then(r => { job.results.agent2 = r; job.running = false; job.stage = 'done'; addLog('Agent 2 done: ' + JSON.stringify(r)); })
+    .catch(e => { job.running = false; job.stage = 'error'; addLog('Error: ' + e.message); });
+  res.json({ message: 'Agent 2 started' });
+});
+
+app.post('/run/agent3', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Already running' });
+  const { country, minScore } = req.body;
+  job.running = true; job.stage = 'agent3'; job.logs = [];
+  runAgent3(country, { minScore: minScore || 50, onProgress: addLog })
+    .then(r => { job.results.agent3 = r; job.running = false; job.stage = 'done'; addLog('Agent 3 done: ' + JSON.stringify(r)); })
+    .catch(e => { job.running = false; job.stage = 'error'; addLog('Error: ' + e.message); });
+  res.json({ message: 'Agent 3 started' });
+});
+
+app.post('/run/agent4', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Already running' });
+  const { country, maxApolloCredits, dryRun } = req.body;
+  job.running = true; job.stage = 'agent4'; job.logs = [];
+  runAgent4(country, { maxApolloCredits: maxApolloCredits || 5, dryRun: dryRun || false, onProgress: addLog })
+    .then(r => { job.results.agent4 = r; job.running = false; job.stage = 'done'; addLog('Agent 4 done: ' + JSON.stringify(r)); })
+    .catch(e => { job.running = false; job.stage = 'error'; addLog('Error: ' + e.message); });
+  res.json({ message: 'Agent 4 started' });
+});
+
+// Stop
+app.post('/stop', (req, res) => {
+  job.running = false;
+  job.stage   = 'stopped';
+  addLog('Stopped by user.');
+  res.json({ message: 'Stopped' });
+});
+
+// Status — polled by dashboard
+app.get('/status', (req, res) => res.json(job));
+
+// ── DATA ROUTES ───────────────────────────────────────────────────────────
+
+// Companies
+app.get('/companies', async (req, res) => {
+  const { country, min_score, source } = req.query;
+  let q = supabase.from('companies').select('*').order('match_score', { ascending: false });
+  if (country)   q = q.eq('country', country);
+  if (min_score) q = q.gte('match_score', parseInt(min_score));
+  if (source)    q = q.eq('source', source);
+  const { data, error } = await q.limit(500);
+  if (error) return res.status(500).json({ error });
+  res.json(data);
+});
+
+// People / contacts
+app.get('/people', async (req, res) => {
+  const { country, email_status, company_id, min_confidence, is_safe } = req.query;
+  let q = supabase.from('people').select('*').order('created_at', { ascending: false });
+  if (country)        q = q.eq('country', country);
+  if (email_status)   q = q.eq('email_status', email_status);
+  if (company_id)     q = q.eq('company_id', company_id);
+  if (min_confidence) q = q.gte('email_confidence', parseFloat(min_confidence));
+  if (is_safe === 'true') q = q.eq('is_safe_to_send', true);
+  const { data, error } = await q.limit(1000);
+  if (error) return res.status(500).json({ error });
+  res.json(data);
+});
+
+// Stats
+app.get('/stats', async (req, res) => {
+  const [companies, people, verified, safe] = await Promise.all([
+    supabase.from('companies').select('*', { count: 'exact', head: true }),
+    supabase.from('people').select('*', { count: 'exact', head: true }),
+    supabase.from('people').select('*', { count: 'exact', head: true }).eq('email_status', 'verified'),
+    supabase.from('people').select('*', { count: 'exact', head: true }).eq('is_safe_to_send', true),
   ]);
-  res.json({ companies: c.count || 0, contacts: ct.count || 0 });
-});
-
-// ── START SEARCH ──────────────────────────────────────────────────────────────
-app.post("/search", async (req, res) => {
-  const { country } = req.body;
-  if (!country) return res.status(400).json({ error: "Country required" });
-  if (isRunning) return res.status(400).json({ error: "Already running. Stop first." });
-
-  isRunning = true;
-  progress = { step: "Starting", pct: 5, log: [] };
-  addLog("Starting search for " + country + "...");
-  res.json({ message: "Search started", country });
-
-  progress.step = "Agent 3";
-  progress.pct = 10;
-  addLog("Searching companies and buyers in " + country + "...");
-
-  const agent3 = exec("node agent3-enrichment.js \"" + country + "\"");
-  currentProcess = agent3;
-
-  agent3.stdout.on("data", data => {
-    addLog(data.trim());
-    progress.pct = Math.min(95, progress.pct + 2);
-  });
-  agent3.stderr.on("data", data => addLog("Warning: " + data.trim()));
-  agent3.on("close", code => {
-    isRunning = false;
-    currentProcess = null;
-    if (code !== 0) {
-      addLog("Search failed with code " + code);
-      progress.step = "Error";
-    } else {
-      progress.pct = 100;
-      progress.step = "Done";
-      addLog("Search complete for " + country + "!");
-      addLog("Companies and buyers saved. Reveal emails from CRM.");
-    }
+  res.json({
+    companies: companies.count || 0,
+    people:    people.count    || 0,
+    verified:  verified.count  || 0,
+    safe:      safe.count      || 0,
   });
 });
 
-// ── HUNTER SCRAPER ────────────────────────────────────────────────────────────
-app.post("/scrape-hunter", async (req, res) => {
-  const { country } = req.body;
-  if (!country) return res.status(400).json({ error: "Country required" });
-  if (isRunning) return res.status(400).json({ error: "Already running. Stop first." });
+// Export CSV
+app.get('/export/csv', async (req, res) => {
+  const { country, min_confidence = 0.6, is_safe } = req.query;
+  let q = supabase.from('people')
+    .select('full_name,job_title,email,email_status,email_confidence,company_name,country,linkedin_url,is_safe_to_send,pattern_used')
+    .gte('email_confidence', parseFloat(min_confidence))
+    .not('email', 'is', null)
+    .order('email_confidence', { ascending: false });
+  if (country) q = q.eq('country', country);
+  if (is_safe === 'true') q = q.eq('is_safe_to_send', true);
 
-  isRunning = true;
-  progress = { step: "Scraping", pct: 5, log: [] };
-  addLog(`Starting Hunter UI scraper for ${country}...`);
-  addLog("No credits used — UI automation!");
-  res.json({ message: "Scraper started", country });
-
-  const scraper = exec(`node hunter-scraper.js "${country}"`);
-  currentProcess = scraper;
-
-  scraper.stdout.on("data", data => {
-    addLog(data.trim());
-    progress.pct = Math.min(95, progress.pct + 3);
-  });
-  scraper.stderr.on("data", data => addLog("Warning: " + data.trim()));
-  scraper.on("close", code => {
-    isRunning = false;
-    currentProcess = null;
-    progress.pct = 100;
-    progress.step = code !== 0 ? "Error" : "Done";
-    addLog(code !== 0 ? "Scraper failed" : "Scraper complete! Check CRM for results.");
-  });
-});
-
-// ── STOP ──────────────────────────────────────────────────────────────────────
-app.post("/stop", (req, res) => {
-  if (currentProcess) { currentProcess.kill(); currentProcess = null; }
-  isRunning = false;
-  progress.step = "Stopped";
-  addLog("Stopped by user.");
-  res.json({ message: "Stopped" });
-});
-
-// ── STATUS ────────────────────────────────────────────────────────────────────
-app.get("/status", (req, res) => res.json({ isRunning, progress }));
-
-// ── COMPANIES ─────────────────────────────────────────────────────────────────
-app.get("/companies", async (req, res) => {
-  const { country, status, category } = req.query;
-  let query = supabase.from("companies").select("*").order("created_at", { ascending: false });
-  if (country) query = query.eq("country", country);
-  if (status) query = query.eq("status", status);
-  if (category) query = query.eq("category", category);
-  const { data, error } = await query.limit(500);
+  const { data, error } = await q.limit(5000);
   if (error) return res.status(500).json({ error });
-  res.json(data);
+
+  const headers = ['Full Name', 'Job Title', 'Email', 'Status', 'Confidence %', 'Company', 'Country', 'LinkedIn URL', 'Safe to Send', 'Pattern Used'];
+  const rows = data.map(p => [
+    p.full_name || '',
+    p.job_title || '',
+    p.email     || '',
+    p.email_status || '',
+    p.email_confidence ? Math.round(p.email_confidence * 100) + '%' : '',
+    p.company_name || '',
+    p.country      || '',
+    p.linkedin_url || '',
+    p.is_safe_to_send ? 'YES' : 'NO',
+    p.pattern_used || '',
+  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+
+  const csv = [headers.join(','), ...rows].join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="kishor_leads_${country || 'all'}_${Date.now()}.csv"`);
+  res.send(csv);
 });
 
-app.patch("/companies/:id", async (req, res) => {
-  const { error } = await supabase.from("companies")
-    .update({ status: req.body.status })
-    .eq("id", req.params.id);
-  if (error) return res.status(500).json({ error });
-  res.json({ success: true });
+// Nightly learning job (call via cron or manually)
+app.post('/nightly-learning', async (req, res) => {
+  if (job.running) return res.status(400).json({ error: 'Pipeline running' });
+  addLog('Nightly learning job triggered...');
+  runNightlyLearning(addLog)
+    .then(r => addLog('Nightly learning done: ' + JSON.stringify(r)))
+    .catch(e => addLog('Error: ' + e.message));
+  res.json({ message: 'Nightly learning started' });
 });
 
-// ── CONTACTS ──────────────────────────────────────────────────────────────────
-app.get("/contacts", async (req, res) => {
-  const { company_id, country } = req.query;
-  let query = supabase.from("contacts").select("*").order("created_at", { ascending: false });
-  if (company_id) query = query.eq("company_id", company_id);
-  if (country) query = query.eq("country", country);
-  const { data, error } = await query.limit(1000);
-  if (error) return res.status(500).json({ error });
-  res.json(data);
-});
-
-// ── REVEAL EMAIL — Hunter email finder ────────────────────────────────────────
-app.post("/contacts/:id/reveal-email", async (req, res) => {
-  if (!HUNTER_KEY) return res.status(500).json({ error: "HUNTER_API_KEY not set" });
-
-  const { data: contact, error: fetchError } = await supabase
-    .from("contacts").select("*").eq("id", req.params.id).single();
-
-  if (fetchError || !contact) return res.status(404).json({ error: "Contact not found" });
-  if (contact.email_revealed && contact.email_1) {
-    return res.json({ email: contact.email_1, already_revealed: true });
-  }
-
-  try {
-    if (!contact.company_website) {
-      return res.status(400).json({ error: "No company domain to search" });
-    }
-
-    const params = new URLSearchParams({
-      api_key:    HUNTER_KEY,
-      domain:     contact.company_website,
-      first_name: contact.first_name || "",
-      last_name:  contact.last_name  || "",
-    });
-
-    const r    = await fetch(`${HUNTER_BASE}/email-finder?${params}`);
-    const data = await r.json();
-    const email = data.data?.email || null;
-
-    if (email) {
-      await supabase.from("contacts").update({
-        email_1:            email,
-        email_revealed:     true,
-        email_revealed_at:  new Date().toISOString()
-      }).eq("id", req.params.id);
-      res.json({ email, success: true, confidence: data.data?.score });
-    } else {
-      res.json({ email: null, success: false, message: "Email not found" });
-    }
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── CREDITS ───────────────────────────────────────────────────────────────────
-app.get("/credits", async (req, res) => {
-  if (!HUNTER_KEY) return res.status(500).json({ error: "No HUNTER_API_KEY" });
-  try {
-    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
-    const data = await r.json();
-    res.json({
-      searches_left:       data.data?.requests?.searches?.available,
-      verifications_left:  data.data?.requests?.verifications?.available,
-      plan:                data.data?.plan_name
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── TEST HUNTER ───────────────────────────────────────────────────────────────
-app.get("/test-hunter", async (req, res) => {
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-  const results = {};
-
-  try {
-    const r    = await fetch(`${HUNTER_BASE}/account?api_key=${HUNTER_KEY}`);
-    const data = await r.json();
-    results.account = {
-      plan:                data.data?.plan_name,
-      searches_left:       data.data?.requests?.searches?.available,
-      verifications_left:  data.data?.requests?.verifications?.available
-    };
-  } catch(e) { results.account = { error: e.message }; }
-
-  try {
-    const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: "bestseller.com", limit: 5 });
-    const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
-    const data = await r.json();
-    results.domain_search = {
-      company:      data.data?.organization,
-      total_emails: data.meta?.results || 0,
-      sample:       (data.data?.emails || []).slice(0, 3).map(e => ({
-        name:  `${e.first_name} ${e.last_name}`,
-        title: e.position,
-        email: e.value
-      }))
-    };
-  } catch(e) { results.domain_search = { error: e.message }; }
-
-  res.json(results);
-});
-
-// ── TEST 5 COMPANIES ──────────────────────────────────────────────────────────
-app.get("/test-companies", async (req, res) => {
-  if (!HUNTER_KEY) return res.json({ error: "HUNTER_API_KEY not set" });
-
-  const TEST_COMPANIES = [
-    { name: "BESTSELLER",    domain: "bestseller.com" },
-    { name: "Ganni",         domain: "ganni.com" },
-    { name: "Samsoe Samsoe", domain: "samsoe.com" },
-    { name: "Les Deux",      domain: "lesdeux.com" },
-    { name: "Gestuz",        domain: "gestuz.com" },
-  ];
-
-  const TARGET_TITLES = ["buyer","buying","sourcing","procurement","purchasing","merchandise","import","supply","director","head"];
-  const results = [];
-
-  for (const company of TEST_COMPANIES) {
-    try {
-      const params = new URLSearchParams({ api_key: HUNTER_KEY, domain: company.domain, limit: 10, type: "personal" });
-      const r    = await fetch(`${HUNTER_BASE}/domain-search?${params}`);
-      const data = await r.json();
-      const allEmails = data.data?.emails || [];
-      const buyers = allEmails.filter(e => {
-        const title = (e.position || "").toLowerCase();
-        return TARGET_TITLES.some(t => title.includes(t));
-      });
-      results.push({
-        company:      company.name,
-        domain:       company.domain,
-        total_people: data.meta?.results || 0,
-        buyers_found: buyers.length,
-        buyers:       buyers.map(e => ({
-          name:       `${e.first_name || ""} ${e.last_name || ""}`.trim(),
-          title:      e.position    || "—",
-          email:      e.value       || "—",
-          linkedin:   e.linkedin    || null,
-          confidence: e.confidence  || null
-        }))
-      });
-      await new Promise(r => setTimeout(r, 800));
-    } catch(e) {
-      results.push({ company: company.name, error: e.message });
-    }
-  }
-  res.json({ test: "5 Danish Fashion Companies", results });
-});
-
-// ── SMTP HELPERS ──────────────────────────────────────────────────────────────
-function cleanName(raw) {
-  return (raw || '').replace(/^View\s+/i, '').replace(/'s\s+profile$/i, '').trim();
-}
-
-function generateCandidates(fullName, domain) {
-  const name = cleanName(fullName);
-  const parts = name.toLowerCase().replace(/[^a-z\s]/g, '').trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return [];
-  const first = parts[0], last = parts[parts.length - 1];
-  const f = first[0], l = last[0];
-  const allInitials = parts.map(p => p[0]).join('');
-  const raw = [
-    `${first}.${last}`,
-    `${first}`,
-    `${f}${l}`,
-    allInitials,
-    `${first}${l}`,
-    `${first}.${l}`,
-    `${last}`,
-    `${f}.${last}`,
-    `${first}${last}`,
-  ];
-  const seen = new Set();
-  return raw
-    .filter(c => c && c.length > 0)
-    .map(c => `${c}@${domain}`)
-    .filter(email => {
-      if (seen.has(email)) return false;
-      seen.add(email);
-      return true;
-    });
-}
-
-async function smtpCheck(email) {
-  const net = require('net');
-  const dns = require('dns').promises;
-  return new Promise(async (resolve) => {
-    try {
-      const emailDomain = email.split('@')[1];
-      const mxRecords = await dns.resolveMx(emailDomain).catch(() => null);
-      if (!mxRecords || !mxRecords.length) return resolve(false);
-      const mx = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
-      const socket = net.createConnection(25, mx);
-      let buffer = '', step = 0, resolved = false;
-      const done = (result) => {
-        if (!resolved) { resolved = true; socket.destroy(); resolve(result); }
-      };
-      socket.setTimeout(25000);
-      socket.on('timeout', () => done(false));
-      socket.on('error', () => done(false));
-      socket.on('data', (chunk) => {
-        buffer += chunk.toString();
-        if (step === 0 && buffer.includes('220')) {
-          socket.write('EHLO kishorexports.com\r\n'); step = 1; buffer = '';
-        } else if (step === 1 && buffer.includes('250')) {
-          socket.write('MAIL FROM:<verify@kishorexports.com>\r\n'); step = 2; buffer = '';
-        } else if (step === 2 && buffer.includes('250')) {
-          socket.write(`RCPT TO:<${email}>\r\n`); step = 3; buffer = '';
-        } else if (step === 3) {
-          const valid = buffer.includes('250') || buffer.includes('251');
-          socket.write('QUIT\r\n');
-          done(valid);
-        }
-      });
-    } catch(e) { resolve(false); }
-  });
-}
-
-// ── SMTP EMAIL VERIFIER ───────────────────────────────────────────────────────
-app.get("/verify-email", async (req, res) => {
+// Verify single email
+app.get('/verify-email', async (req, res) => {
   const { email } = req.query;
-  if (!email) return res.status(400).json({ error: "email query param required" });
-  try {
-    const valid = await smtpCheck(email);
-    res.json({ valid, email, message: valid ? 'Deliverable' : 'Not deliverable' });
-  } catch(e) {
-    res.json({ valid: false, email, message: 'Error: ' + e.message });
-  }
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const { smtpVerify } = require('./agent4-email');
+  const result = await smtpVerify(email);
+  res.json({ email, ...result });
 });
 
-app.post("/verify-email", async (req, res) => {
-  const { full_name, domain } = req.body;
-  if (!full_name || !domain) return res.status(400).json({ error: "full_name and domain required" });
-  const candidates = generateCandidates(full_name, domain);
-  if (!candidates.length) return res.json({ success: false, email: null, method: 'no_name' });
-  try {
-    for (const email of candidates) {
-      const valid = await smtpCheck(email);
-      if (valid) return res.json({ success: true, email, method: 'smtp_verified' });
-    }
-    res.json({ success: false, email: candidates[0], method: 'best_guess' });
-  } catch(e) {
-    res.json({ success: false, email: candidates[0], method: 'error', error: e.message });
-  }
+// Legacy compatibility routes
+app.get('/contacts', async (req, res) => {
+  const { country, company_id } = req.query;
+  let q = supabase.from('people').select('*').order('created_at', { ascending: false });
+  if (country)    q = q.eq('country', country);
+  if (company_id) q = q.eq('company_id', company_id);
+  const { data, error } = await q.limit(1000);
+  if (error) return res.status(500).json({ error });
+  res.json(data);
 });
 
-// ── APOLLO SCRAPE COMPANY ─────────────────────────────────────────────────────
-app.post("/apollo-scrape-company", async (req, res) => {
-  const { company_name, domain } = req.body;
-  if (!company_name && !domain) return res.status(400).json({ error: "company_name or domain required" });
-
-  try {
-    const APOLLO_KEY = process.env.APOLLO_API_KEY;
-    if (!APOLLO_KEY) return res.status(500).json({ error: "APOLLO_API_KEY not set" });
-
-    let people = [];
-
-    if (domain) {
-      const r1 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": APOLLO_KEY },
-        body: JSON.stringify({ q_organization_domains: [domain], per_page: 10 })
-      });
-      const d1 = await r1.json();
-      people = d1.people || [];
-    }
-
-    if (!people.length) {
-      const r2 = await fetch("https://api.apollo.io/api/v1/mixed_people/api_search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": APOLLO_KEY },
-        body: JSON.stringify({ q_organization_name: company_name, per_page: 10 })
-      });
-      const d2 = await r2.json();
-      people = d2.people || [];
-    }
-
-    if (!people.length) return res.json({ found: 0, message: "No people found on Apollo" });
-
-    let saved = 0;
-    for (const p of people) {
-      const fullName = `${p.first_name || ''} ${p.last_name || ''}`.trim();
-      if (!fullName) continue;
-
-      const row = {
-        company_name: company_name,
-        company_id: null,
-        full_name: fullName,
-        title: p.title || null,
-        linkedin_url: p.linkedin_url || null,
-        location: p.city ? `${p.city}, ${p.country}` : (p.country || null),
-        source: 'apollo',
-      };
-
-      const { error } = await supabase.from("people")
-        .upsert(row, { onConflict: 'linkedin_url', ignoreDuplicates: true });
-
-      if (!error) saved++;
-    }
-
-    res.json({ found: saved, total_apollo: people.length, company: company_name });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+// Dashboard
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
 
-// ── EMAIL PATTERN ENGINE ──────────────────────────────────────────────────────
-// Test endpoint — no API calls, just checks pattern accuracy on training data
-app.get("/pattern-test", async (req, res) => {
-  try {
-    const { testLocally } = require('./emailPatternEngine');
-    addLog("Pattern engine test started...");
-    const accuracy = testLocally('./training_data.json');
-    res.json({
-      success: true,
-      accuracy_pct: accuracy,
-      message: "Check /status logs for full breakdown"
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Dry run — shows what it WOULD do, uses 0 Apollo credits, saves nothing
-app.get("/pattern-dryrun", async (req, res) => {
-  const maxCredits = Math.min(parseInt(req.query.credits) || 10, 15);
-  try {
-    const { runPatternEngine } = require('./emailPatternEngine');
-    addLog(`Pattern engine DRY RUN started — max credits: ${maxCredits}`);
-    res.json({ message: "Dry run started. Check /status for logs.", maxCredits });
-    await runPatternEngine({ maxCredits, dryRun: true, trainingDataPath: './training_data.json' });
-    addLog("Dry run complete.");
-  } catch (e) {
-    addLog("Pattern engine error: " + e.message);
-  }
-});
-
-// Live run — uses Apollo credits (max 15 hard limit), saves to Supabase
-app.get("/pattern-run", async (req, res) => {
-  const maxCredits = Math.min(parseInt(req.query.credits) || 10, 15);
-  try {
-    const { runPatternEngine } = require('./emailPatternEngine');
-    addLog(`Pattern engine LIVE RUN started — max credits: ${maxCredits}`);
-    res.json({ message: "Pattern engine started. Check /status for live logs.", maxCredits });
-    const result = await runPatternEngine({ maxCredits, dryRun: false, trainingDataPath: './training_data.json' });
-    addLog(`Pattern engine done. Credits used: ${result.creditsUsed}. Emails: ${result.emailsGenerated}. Verified: ${result.emailsVerified}`);
-  } catch (e) {
-    addLog("Pattern engine error: " + e.message);
-  }
-});
-
-// ── CRM ───────────────────────────────────────────────────────────────────────
-const path = require('path');
 app.get('/crm', (req, res) => {
   res.sendFile(path.join(__dirname, 'people-crm-v2.html'));
 });
 
-// ── ROOT ──────────────────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
+// Root
+app.get('/', (req, res) => {
   res.json({
-    status: "Kishor Lead Engine v7.4 — Pattern Engine Added",
+    name:    'Kishor Lead Engine v8.0',
+    status:  job.running ? `Running: ${job.stage}` : 'Idle',
     endpoints: {
-      "POST /search":                    "Search by country (uses Hunter API)",
-      "POST /scrape-hunter":             "Scrape Hunter UI — NO credits used!",
-      "GET /status":                     "Check progress + logs",
-      "POST /stop":                      "Stop current job",
-      "GET /companies":                  "All companies",
-      "GET /contacts":                   "All contacts",
-      "POST /contacts/:id/reveal-email": "Reveal email (1 Hunter credit)",
-      "GET /verify-email?email=xxx":     "SMTP verify single email (free)",
-      "GET /crm":                        "People CRM dashboard",
-      "GET /credits":                    "Check Hunter credits",
-      "GET /stats":                      "DB counts",
-      "GET /pattern-test":               "Test pattern accuracy (no API)",
-      "GET /pattern-dryrun?credits=10":  "Dry run pattern engine (no saves)",
-      "GET /pattern-run?credits=10":     "LIVE run — max 10 Apollo credits"
+      'POST /run':           'Start full pipeline — body: { country, skipAgent1, skipAgent2, maxApolloCredits }',
+      'POST /run/agent1':    'Run Agent 1 only — body: { country }',
+      'POST /run/agent2':    'Run Agent 2 only — body: { country, limit }',
+      'POST /run/agent3':    'Run Agent 3 only — body: { country }',
+      'POST /run/agent4':    'Run Agent 4 only — body: { country, maxApolloCredits, dryRun }',
+      'POST /stop':          'Stop current job',
+      'GET /status':         'Live pipeline status + logs',
+      'GET /stats':          'DB counts',
+      'GET /companies':      'Companies — ?country=Denmark&min_score=50',
+      'GET /people':         'People — ?country=Denmark&email_status=verified&is_safe=true',
+      'GET /export/csv':     'Export verified leads as CSV — ?country=Denmark&is_safe=true',
+      'GET /verify-email':   'Verify single email — ?email=test@example.com',
+      'POST /nightly-learning': 'Trigger nightly pattern learning job',
+      'GET /dashboard':      'Main dashboard UI',
+      'GET /crm':            'People CRM',
     }
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Kishor Lead Engine v7.4 running on port " + PORT));
-
-// ── SAVE COMPANY (from Chrome Extension) ─────────────────────────────────────
-app.post("/save-company", async (req, res) => {
-  const { name, domain, industry, size, country, source } = req.body;
-  if (!name && !domain) return res.status(400).json({ error: "No data" });
-  try {
-    const { error } = await supabase.from("companies").upsert({
-      company_name: name || domain,
-      website:      domain || null,
-      full_url:     domain ? "https://" + domain : null,
-      category:     industry || "Fashion",
-      industry:     industry || null,
-      country:      country  || "unknown",
-      company_size: size     || null,
-      status:       "discovered",
-      enriched:     true,
-      source:       source || "extension",
-      created_at:   new Date().toISOString()
-    }, { onConflict: domain ? "website" : "company_name", ignoreDuplicates: true });
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── SAVE CONTACT (from Chrome Extension) ─────────────────────────────────────
-app.post("/save-contact", async (req, res) => {
-  const { name, title, email, linkedin, company, domain, country, source } = req.body;
-  if (!name && !email) return res.status(400).json({ error: "No data" });
-  try {
-    const nameParts = (name || "").split(" ");
-    const row = {
-      company_name:    company  || null,
-      company_website: domain   || null,
-      contact_name:    name     || email?.split("@")[0] || "",
-      first_name:      nameParts[0] || null,
-      last_name:       nameParts.slice(1).join(" ") || null,
-      job_title:       title    || null,
-      email_1:         email    || null,
-      email_revealed:  !!email,
-      linkedin_url:    linkedin || null,
-      country:         country  || "unknown",
-      source:          source   || "extension",
-      status:          "new",
-      created_at:      new Date().toISOString()
-    };
-    const conflict = email ? "email_1" : linkedin ? "linkedin_url" : null;
-    if (conflict) {
-      await supabase.from("contacts").upsert(row, { onConflict: conflict, ignoreDuplicates: true });
-    } else {
-      await supabase.from("contacts").insert(row);
-    }
-    res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+app.listen(PORT, () => console.log(`Kishor Lead Engine v8.0 running on port ${PORT}`));
